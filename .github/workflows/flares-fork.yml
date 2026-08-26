@@ -178,6 +178,13 @@ jobs:
       - name: The editor works under its own Content-Security-Policy
         run: node tests/regressions/csp.mjs
 
+      # Asking for minimal chrome also hid the presence cluster, so an embedded
+      # document stayed collaborative and stopped looking collaborative — the
+      # failure nobody reports, because nothing is broken. This also takes the
+      # server away for real and checks the editor stops claiming to be Live.
+      - name: You can tell who else is in the document
+        run: node tests/regressions/presence.mjs
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
