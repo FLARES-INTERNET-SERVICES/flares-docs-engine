@@ -11,7 +11,7 @@ revision inside app image `casualoffice/docs@sha256:0f9892411476f45a…`
 
 **Tagged:** `0.0.5-flares.1`.
 
-**Totals:** 16 patches.
+**Totals:** 18 patches.
 
 | | Files | +/− |
 | --- | --- | --- |
@@ -46,6 +46,8 @@ ProseMirror schema and the layout engine are untouched.
 | **P014** | `beforeunload` warned about saved work | editor package | 1 | +16 / −2 | yes, strongly |
 | **P015** | Version history keyed by document name | editor package | 2 | +26 / −4 | yes |
 | **P016** | "Minimal chrome" hid the collaborators | editor package | 2 | +14 / −2 | yes |
+| **P017** | Host-owned presence (emit peers to the host) | editor package | 1 | +40 / −3 | yes |
+| **P018** | Open a document read-only from the URL | editor package | 1 | +12 / −1 | yes |
 
 ---
 
@@ -441,6 +443,48 @@ suppress; presence is not, because the peer list exists only inside the
 editor's own collaboration session and no host can reach it.
 
 **If dropped:** collaborative editing with no sign that it is collaborative.
+
+---
+
+## P017 — Host-owned presence
+
+**Where:** `examples/vite/src/App.tsx`
+
+**The problem.** A host that draws its own header (P009) shows the document's
+name, its save state and a Share control itself. It could not, though, show who
+was in the document or whether the connection was live: those live only inside
+the editor's collaboration session, so the collaborator cluster and the
+connection pill had to stay in the frame — under the host's own bar, a second
+place the same things were shown.
+
+**What it does.** With `hostPresence=1` the editor hides its own presence
+cluster and connection pill and instead posts the peer list and status to the
+parent window, as a neutral `casualoffice:collab` message targeted at
+`hostOrigin`. The host renders the collaborators beside its Share control and a
+single connection indicator. Only display names and colours cross — the same
+things every peer already sees on each other's cursors — and only when the host
+asked. A generic embedding hook, not a host-specific one.
+
+**If dropped:** an embedded editor shows collaborators twice, or the host
+cannot show them at all.
+
+---
+
+## P018 — Open a document read-only from the URL
+
+**Where:** `examples/vite/src/App.tsx`
+
+**The problem.** A host decides who may write from its own permissions, but the
+only way it could stop a viewer writing was to let the collaboration server
+reject the writes after the fact — so a viewer typed into a document that
+silently discarded their keystrokes.
+
+**What it does.** The collab example reads a `mode` query parameter
+(`viewing` / `suggesting` / `editing`) and passes it as `documentMode`, so the
+host can open the surface read-only. The server still enforces it; this is the
+visible half, so a viewer sees a read-only document rather than a trap.
+
+**If dropped:** viewers type into a document that throws their edits away.
 
 ---
 
