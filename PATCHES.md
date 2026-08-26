@@ -1,20 +1,32 @@
 # Patches carried by this fork
 
 Every divergence from upstream `CasualOffice/docs`, why it exists, and what
-would happen if it were dropped. Five of the seven are generic fixes intended
-to go back upstream; the notes say which and why.
+would happen if it were dropped. Most are generic fixes intended to go back
+upstream; the notes say which and why.
 
 **Baseline:** `7b03e1113244130375b69ce4258744d097252917` (2026-07-08), the
 revision inside app image `casualoffice/docs@sha256:0f9892411476f45a…`
 (version 0.0.5). The collab server is that image's vendored
 `@casualoffice/collab@0.1.0`.
 
-**Totals:** 7 patches · 10 files · **541 lines added, 31 removed**
-(client 262/18 across 6 files; server 279/13 across 4, including
-`seed-token.ts` as a new 134-line file).
+**Tagged:** `0.0.5-flares.1`.
 
-**Editor engine (`@eigenpal/docx-core`): 1 patch, 15 lines.** The CRDT,
-the ProseMirror schema and the layout engine are untouched.
+**Totals:** 15 patches.
+
+| | Files | +/− |
+| --- | --- | --- |
+| Client and editor packages | 17 | +687 / −265 |
+| Collaboration server, via `patches/collab-server.patch` | 5 | +522 / −18 |
+| Attribution, CI, setup, regression suites, fixtures | 19 | +2914 / −210 |
+
+The server figures are the carried diff rather than files in this repository:
+the collaboration server is the `collab` submodule, which this fork does not
+own. `setup.sh` applies the patch; `patches/README.md` says what happens if it
+is skipped, which is that seeding stays unauthenticated.
+
+**Editor engine (`@eigenpal/docx-core`): 2 patches.** P006 is fifteen lines in
+the serializer; P011 removes the font loader's CDN path. The CRDT, the
+ProseMirror schema and the layout engine are untouched.
 
 | | Patch | Area | Files | +/− | Upstreamable |
 | --- | --- | --- | --- | --- | --- |
@@ -27,6 +39,12 @@ the ProseMirror schema and the layout engine are untouched.
 | **P007** | Comment threads never shared | client + package | 2 | +30 / −0 | yes |
 | **P008** | Documents named by their room id | collab server | 2 | +40 / −2 | yes, strongly |
 | **P009** | Embedded editor draws a second title bar | editor package + app | 3 | +28 / −6 | yes |
+| **P010** | "Saved" and "restore an old copy?" at once | editor package + app | 4 | +96 / −22 | yes, strongly |
+| **P011** | Fonts fetched from Google on every load | editor core + package | 4 | +180 / −120 | yes |
+| **P012** | No Content-Security-Policy on the editor origin | collab server + app | 3 | +110 / −60 | yes |
+| **P013** | "Minimal chrome" still drew a stand-in logo | editor package | 1 | +14 / −3 | yes |
+| **P014** | `beforeunload` warned about saved work | editor package | 1 | +16 / −2 | yes, strongly |
+| **P015** | Version history keyed by document name | editor package | 2 | +26 / −4 | yes |
 
 ---
 
