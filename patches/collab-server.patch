@@ -1,0 +1,753 @@
+diff -ruN collab-src-pristine/index.ts collab-src/index.ts
+--- a/src/index.ts	2026-08-26 02:56:55.837422700 +0100
++++ b/src/index.ts	2026-08-26 13:46:29.803068100 +0100
+@@ -8,6 +8,13 @@
+ import { dirname, join, resolve } from 'node:path';
+ import { existsSync } from 'node:fs';
+ import { RoomRegistry, RoomCapacityError } from './rooms.js';
++import {
++  isSeedAuthEnabled,
++  signSeedToken,
++  verifySeedToken,
++  extractSeedToken,
++  SeedTokenError,
++} from './seed-token.js';
+ import { attachHocuspocus } from './yjs.js';
+ import { createStorage } from './storage.js';
+ import { createHost } from './host/index.js';
+@@ -68,8 +75,16 @@
+   .split(',')
+   .map((o) => o.trim())
+   .filter(Boolean);
++// `Content-Disposition` is not a CORS-safelisted response header, so a
++// cross-origin client cannot READ it unless it is exposed explicitly. The
++// editor uses it to learn a document's name and falls back to the room id
++// without it -- so an embedded editor on its own origin ends up showing a
++// user an internal identifier as the name of their document. Sending the
++// header is not enough; it has to be readable.
++const exposedHeaders = ['content-disposition'];
++
+ if (corsOrigins.length > 0) {
+-  await app.register(cors, { origin: corsOrigins, credentials: true });
++  await app.register(cors, { origin: corsOrigins, credentials: true, exposedHeaders });
+   app.log.info(`CORS: restricted to ${corsOrigins.join(', ')}`);
+ } else {
+   if (process.env.NODE_ENV === 'production') {
+@@ -77,7 +92,7 @@
+       'CORS: reflecting any Origin (no CORS_ORIGINS set) — set an allowlist in production',
+     );
+   }
+-  await app.register(cors, { origin: true });
++  await app.register(cors, { origin: true, exposedHeaders });
+ }
+ await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES } });
+ await app.register(cookie);
+@@ -132,6 +147,80 @@
+   (_req, body, done) => done(null, body),
+ );
+ 
++/**
++ * Security headers for the editor origin.
++ *
++ * The editor had no Content-Security-Policy of any kind. That is worth fixing
++ * on its own terms, but it matters more once the editor is embedded: a host
++ * application can put a tight policy on its own page and still be undermined,
++ * because a framed document gets the FRAME's policy, not the parent's.
++ *
++ * The policy below is written from what the editor demonstrably needs, not
++ * arrived at by loosening directives until the console went quiet:
++ *
++ *   script-src 'self'        The bundle is the only script. No eval, no CDN.
++ *   style-src  'unsafe-inline'
++ *                            Unavoidable, and the one relaxation here. The
++ *                            editor paints a document by writing computed
++ *                            style attributes on thousands of runs -- that IS
++ *                            the rendering model, not laziness. Style cannot
++ *                            fetch or exfiltrate the way script can.
++ *   img-src    data: blob:   Images unzipped from the .docx never touch a URL.
++ *   font-src   'self' data:  Every face is bundled. Nothing external, which
++ *                            is the point -- see tokens/fonts.css.
++ *   connect-src 'self' + ws  The Yjs socket. Same origin in the standard
++ *                            deployment; named explicitly because 'self'
++ *                            matching ws: is a CSP3 nicety not every browser
++ *                            in a school computer lab has caught up with.
++ *   frame-ancestors          Who may embed the editor. Defaults to nobody.
++ *
++ * `FRAME_ANCESTORS` is the only knob, and it is deliberately a knob rather
++ * than a hardcoded hostname: the editor must not know the name of any
++ * particular host application. An operator embedding it sets the value to
++ * their own origin; leaving it unset means the editor refuses to be framed at
++ * all, which is the safe default for a standalone deployment.
++ */
++const frameAncestors = (process.env.FRAME_ANCESTORS ?? '')
++  .split(',')
++  .map((o) => o.trim())
++  .filter(Boolean);
++
++const csp = [
++  "default-src 'self'",
++  "script-src 'self'",
++  "style-src 'self' 'unsafe-inline'",
++  "font-src 'self' data:",
++  "img-src 'self' data: blob:",
++  "media-src 'self' blob:",
++  "connect-src 'self' blob: ws: wss:",
++  "worker-src 'self' blob:",
++  "child-src 'self' blob:",
++  "manifest-src 'self'",
++  "form-action 'self'",
++  "base-uri 'self'",
++  "object-src 'none'",
++  `frame-ancestors ${frameAncestors.length > 0 ? frameAncestors.join(' ') : "'none'"}`,
++].join('; ');
++
++if (frameAncestors.length > 0) {
++  app.log.info(`CSP: embeddable by ${frameAncestors.join(', ')}`);
++} else {
++  app.log.info('CSP: not embeddable (set FRAME_ANCESTORS to allow a host application)');
++}
++
++// Applied to documents only. Putting a CSP on a .docx download or a JSON
++// response accomplishes nothing and makes the header hard to reason about.
++app.addHook('onSend', async (_req, reply) => {
++  const type = String(reply.getHeader('content-type') ?? '');
++  if (!type.includes('text/html')) return;
++
++  reply.header('Content-Security-Policy', csp);
++  reply.header('X-Content-Type-Options', 'nosniff');
++  // A document editor leaks the document's identity in the path. Send the
++  // origin to other sites, never the room id.
++  reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
++});
++
+ // Serve the built web bundle if present (production / docker). In dev the
+ // web app lives on a separate Vite server on :5273 and this path is empty.
+ const here = dirname(fileURLToPath(import.meta.url));
+@@ -192,6 +281,12 @@
+ // route can validate that a minted token's `roomId` refers to a live room
+ // (sharing-model §6.1 — tokens are bound to a specific room at mint time).
+ const rooms = new RoomRegistry();
++// Room metadata and seeds outlive the process too, not just the Y.Doc.
++// Without this a restart leaves every document intact in storage and
++// unreachable, because clients bootstrap through /seed and the registry
++// has forgotten the room.
++rooms.useStore(storage);
++
+ rooms.start((evictedId) => {
+   // Fire-and-forget — storage.delete is best-effort, a failure just
+   // means the blob waits out Redis's 7-day TTL. We don't want a
+@@ -292,7 +387,11 @@
+       typeof body.password === 'string' && body.password.length > 0 ? body.password : undefined;
+     try {
+       const id = rooms.create({ password });
+-      return { roomId: id, needsPassword: Boolean(password) };
++      // The creator is the only party that has ever held this id, so
++      // this is the one moment at which minting a seed capability is
++      // safe. It is short-lived and good for this room alone.
++      const seedToken = isSeedAuthEnabled() ? signSeedToken(id) : undefined;
++      return { roomId: id, needsPassword: Boolean(password), seedToken };
+     } catch (err) {
+       if (err instanceof RoomCapacityError) {
+         // 503 — registry is at the MAX_ROOMS cap and every existing
+@@ -316,7 +415,7 @@
+  * the room doesn't exist so a bad link surfaces immediately.
+  */
+ app.get<{ Params: { id: string } }>('/api/rooms/:id/info', async (req, reply) => {
+-  const room = rooms.get(req.params.id);
++  const room = await rooms.rehydrate(req.params.id);
+   if (!room) return reply.code(404).send({ error: 'room_not_found' });
+   return {
+     id: room.id,
+@@ -354,8 +453,34 @@
+       : {},
+   },
+   async (req, reply) => {
+-    const room = rooms.get(req.params.id);
++    const room = await rooms.rehydrate(req.params.id);
+     if (!room) return reply.code(404).send({ error: 'room_not_found' });
++
++    // Capability check. Every failure — missing, expired, tampered,
++    // minted for another room, or carrying a different operation —
++    // collapses to one 401 so a prober learns nothing from the
++    // response; the specific reason goes to the server log only.
++    if (isSeedAuthEnabled()) {
++      try {
++        verifySeedToken(extractSeedToken(req), req.params.id);
++      } catch (err) {
++        const reason = err instanceof SeedTokenError ? err.reason : 'unknown';
++        req.log.warn({ room: req.params.id, reason }, 'seed rejected');
++        return reply.code(401).send({ error: 'unauthorized' });
++      }
++      // Replay guard. Upstream documents this route as "idempotent —
++      // re-uploading replaces", which for a document several people are
++      // editing is the vulnerability rather than a feature. One room
++      // gets one starting document; a second attempt is refused even
++      // with a valid token.
++      const already =
++        rooms.isInitialized(req.params.id) ||
++        (room.xlsxSeed !== undefined && room.xlsxSeed.byteLength > 0);
++      if (already) {
++        return reply.code(409).send({ error: 'already_initialized' });
++      }
++    }
++
+     const file = await req.file();
+     if (!file) return reply.code(400).send({ error: 'no_file' });
+     const buf = await file.toBuffer();
+@@ -365,7 +490,7 @@
+     if (!isZipContainer(buf)) {
+       return reply.code(415).send({ error: 'unsupported_media_type' });
+     }
+-    rooms.setXlsxSeed(req.params.id, new Uint8Array(buf));
++    rooms.setXlsxSeed(req.params.id, new Uint8Array(buf), file.filename);
+     return { ok: true, bytes: buf.byteLength };
+   },
+ );
+@@ -380,17 +505,57 @@
+  * than an actual access control.
+  */
+ app.get<{ Params: { id: string } }>('/api/rooms/:id/seed', async (req, reply) => {
+-  const room = rooms.get(req.params.id);
++  const room = await rooms.rehydrate(req.params.id);
+   if (!room?.xlsxSeed) return reply.code(404).send({ error: 'no_seed' });
+   if (!checkRoomPassword(req, room.id)) {
+     return reply.code(401).send({ error: 'unauthorized' });
+   }
+   reply.header('content-type', fileFormat().contentType);
+   reply.header('cache-control', 'no-store');
++
++  // The client reads the document's name from here and falls back to the room
++  // id without it -- which surfaces an internal identifier to the user as the
++  // name of their document. RFC 5987 form so non-ASCII names survive.
++  if (room.seedFileName) {
++    const ascii = room.seedFileName.replace(/[^ -~]/g, '_').replace(/"/g, '');
++    reply.header(
++      'content-disposition',
++      `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(room.seedFileName)}`,
++    );
++  }
++
+   return reply.send(Buffer.from(room.xlsxSeed));
+ });
+ 
+ /**
++ * Claim the one-time right to seed this room's canonical document.
++ *
++ * The server holds the starting .docx but cannot turn it into Yjs
++ * state — that needs the editor's ProseMirror schema, which only a
++ * client has. So a client must do the seeding, and since every joiner
++ * fetches the same .docx, they would all try. This route picks one.
++ *
++ * `{ won: true }` means "you are the one who seeds"; `{ won: false }`
++ * means someone else already did or is doing it, so render what the
++ * room sends you and touch nothing.
++ *
++ * Password-gated like the other room routes. It is deliberately NOT
++ * seed-token-gated: the winner may be any legitimate participant (the
++ * author might close their tab before joining), and the claim cannot
++ * destroy anything — it grants the right to fill a room that is empty,
++ * and there is exactly one grant.
++ */
++app.post<{ Params: { id: string } }>('/api/rooms/:id/claim-init', async (req, reply) => {
++  const room = await rooms.rehydrate(req.params.id);
++  if (!room) return reply.code(404).send({ error: 'room_not_found' });
++  if (!checkRoomPassword(req, room.id)) {
++    return reply.code(401).send({ error: 'unauthorized' });
++  }
++  const won = rooms.claimInitialization(req.params.id);
++  return { won, initializedAt: rooms.get(req.params.id)?.initializedAt ?? null };
++});
++
++/**
+  * Constant-time password check for a room request. The password rides
+  * the `x-room-password` header — preferable to a query string because
+  * it stays out of access logs and browser history. Falls back to the
+@@ -430,7 +595,7 @@
+       : {},
+   },
+   async (req, reply) => {
+-    const room = rooms.get(req.params.id);
++    const room = await rooms.rehydrate(req.params.id);
+     if (!room) return reply.code(404).send({ error: 'room_not_found' });
+     // Fastify gives us the raw body when content-type isn't JSON/form;
+     // ensure we got bytes.
+@@ -458,7 +623,7 @@
+  * second-and-Nth joiner load nearly free.
+  */
+ app.get<{ Params: { id: string } }>('/api/rooms/:id/snapshot', async (req, reply) => {
+-  const room = rooms.get(req.params.id);
++  const room = await rooms.rehydrate(req.params.id);
+   if (!room?.snapshotGz) return reply.code(404).send({ error: 'no_snapshot' });
+   if (!checkRoomPassword(req, room.id)) {
+     return reply.code(401).send({ error: 'unauthorized' });
+diff -ruN collab-src-pristine/rooms.ts collab-src/rooms.ts
+--- a/src/rooms.ts	2026-08-26 02:56:55.840009000 +0100
++++ b/src/rooms.ts	2026-08-26 12:11:21.837375100 +0100
+@@ -20,6 +20,11 @@
+    *  doesn't carry pre-existing cells — the owner's "Share current
+    *  workbook" flow uploads here so peers see the same starting state. */
+   xlsxSeed?: Uint8Array;
++  /** The filename the seed was uploaded as. The client asks for it via
++   *  `Content-Disposition` when it loads the seed and falls back to the room
++   *  id when it is absent -- which is how a raw room id ends up displayed to
++   *  a user as their document's name. */
++  seedFileName?: string;
+   /** Optional gzipped JSON snapshot (`IWorkbookData`) — server-side cache
+    *  so joiners skip the multi-second xlsx parse on join. Same content
+    *  as `xlsxSeed`, just in a form the client can apply via
+@@ -29,6 +34,19 @@
+   snapshotGz?: Uint8Array;
+   /** ISO timestamp the room was created. */
+   createdAt: string;
++  /**
++   * ISO timestamp at which some client won the right to seed this room's
++   * canonical document, or null while the room is still empty.
++   *
++   * A room's starting document has to be pushed into the shared Y.Doc by
++   * a *client* — the server holds the .docx bytes but has no ProseMirror
++   * schema with which to turn them into Yjs state. That makes "who
++   * seeds?" a race: every joiner fetches the same seed .docx, so without
++   * a referee each one would push its own copy and the room would end up
++   * holding the document N times over. `claimInitialization` is that
++   * referee.
++   */
++  initializedAt: string | null;
+   /** SHA-256 hash of the room password, hex-encoded. `null` = open room. */
+   passwordHash: string | null;
+ };
+@@ -59,8 +77,26 @@
+   }
+ }
+ 
++/** The subset of a room worth surviving a restart. */
++type PersistedRoom = {
++  createdAt: string;
++  initializedAt: string | null;
++  passwordHash: string | null;
++  seedFileName?: string;
++};
++
++/** Durable backing for room metadata. Structurally the part of
++ *  DocStorage the registry needs, so any backend satisfies it. */
++export interface RoomStore {
++  saveRoom(roomId: string, meta: string, seed: Uint8Array | null): Promise<void>;
++  loadRoom(roomId: string): Promise<{ meta: string; seed: Uint8Array | null } | null>;
++}
++
+ export class RoomRegistry {
+   private rooms = new Map<string, RoomState>();
++  /** When set, rooms outlive the process. Without it the registry keeps
++   *  its original in-memory-only behaviour. */
++  private store: RoomStore | null = null;
+   private gc: ReturnType<typeof setInterval> | null = null;
+   /** Optional hook called when a room is evicted — used by the server
+    *  to also drop the persisted Y.Doc from the storage backend so
+@@ -68,6 +104,91 @@
+    *  registry has forgotten. */
+   private onEvict: ((roomId: string) => void) | null = null;
+ 
++  /** Attach durable backing. Rooms created after this point are
++   *  persisted, and unknown ids can be recovered via `rehydrate`. */
++  useStore(store: RoomStore): void {
++    this.store = store;
++  }
++
++  /**
++   * Bring a room back from durable storage after a restart.
++   *
++   * Async, and therefore separate from `get()`: the registry's read path
++   * is synchronous and used on every websocket frame, so making all of
++   * it async to serve the rare cold-miss would be the wrong trade. HTTP
++   * handlers call this on a miss; the hot path is untouched.
++   *
++   * Returns the room, or null if storage has never heard of it either.
++   */
++  async rehydrate(id: string): Promise<RoomState | undefined> {
++    const live = this.rooms.get(id);
++
++    // A live entry is NOT proof the room is fully known.
++    //
++    // `onConnect` fabricates a bare room for any websocket that arrives
++    // carrying an id the registry has never seen — which, after a
++    // restart, is every reconnecting client. That placeholder has no
++    // seed, and because clients open their websocket before fetching
++    // `/seed`, it is already sitting in the map by the time the fetch
++    // arrives. Returning it here would shadow the durable copy
++    // permanently: the document is safe in storage and every request for
++    // it answers 404.
++    //
++    // So a live room short-circuits only when it actually carries the
++    // starting document.
++    if (live?.xlsxSeed && live.xlsxSeed.byteLength > 0) return live;
++    if (!this.store) return live;
++
++    const found = await this.store.loadRoom(id);
++    if (!found) return live;
++
++    let meta: PersistedRoom;
++    try {
++      meta = JSON.parse(found.meta) as PersistedRoom;
++    } catch {
++      return live;
++    }
++
++    // Fill in the placeholder rather than replacing it — it is holding
++    // the live client count for connections already established.
++    if (live) {
++      live.createdAt = meta.createdAt;
++      live.initializedAt = meta.initializedAt ?? live.initializedAt ?? null;
++      live.passwordHash = meta.passwordHash ?? null;
++      live.seedFileName = meta.seedFileName ?? live.seedFileName;
++      if (found.seed) live.xlsxSeed = found.seed;
++      return live;
++    }
++
++    const room: RoomState = {
++      id,
++      clients: 0,
++      idleSince: Date.now(),
++      createdAt: meta.createdAt,
++      initializedAt: meta.initializedAt ?? null,
++      passwordHash: meta.passwordHash ?? null,
++      xlsxSeed: found.seed ?? undefined,
++      seedFileName: meta.seedFileName,
++    };
++    this.rooms.set(id, room);
++    return room;
++  }
++
++  /** Write a room's durable metadata. Fire-and-forget: a storage blip
++   *  should degrade persistence, not fail the user's request. */
++  private persist(room: RoomState, seed: Uint8Array | null = null): void {
++    if (!this.store) return;
++    const meta: PersistedRoom = {
++      createdAt: room.createdAt,
++      initializedAt: room.initializedAt,
++      passwordHash: room.passwordHash,
++      seedFileName: room.seedFileName,
++    };
++    void this.store
++      .saveRoom(room.id, JSON.stringify(meta), seed)
++      .catch((err) => console.warn('[rooms] persist failed for', room.id, err));
++  }
++
+   start(onEvict?: (roomId: string) => void): void {
+     if (this.gc) return;
+     this.onEvict = onEvict ?? null;
+@@ -105,7 +226,9 @@
+       seed: opts.seed,
+       passwordHash: opts.password ? hashPassword(opts.password) : null,
+       createdAt: new Date().toISOString(),
++      initializedAt: null,
+     });
++    this.persist(this.rooms.get(id)!);
+     return id;
+   }
+ 
+@@ -157,13 +280,42 @@
+ 
+   /** Attach an xlsx-format starting workbook to a room. Returns false if
+    *  the room doesn't exist. Idempotent — re-uploading replaces. */
+-  setXlsxSeed(id: string, bytes: Uint8Array): boolean {
++  setXlsxSeed(id: string, bytes: Uint8Array, fileName?: string): boolean {
+     const room = this.rooms.get(id);
+     if (!room) return false;
+     room.xlsxSeed = bytes;
++    if (fileName) room.seedFileName = fileName;
++    this.persist(room, bytes);
+     return true;
+   }
+ 
++  /**
++   * Claim the one-time right to seed this room's canonical document.
++   *
++   * Returns true for exactly ONE caller and false for every caller
++   * after it, so concurrent joiners racing to initialise the same room
++   * resolve to a single winner instead of N duplicated documents.
++   *
++   * The check and the set are deliberately adjacent with no `await`
++   * between them: Node runs this handler to completion before picking
++   * up the next request, which is what makes the pair atomic. Adding an
++   * await in the middle would silently reintroduce the race.
++   */
++  claimInitialization(id: string): boolean {
++    const room = this.rooms.get(id);
++    if (!room) return false;
++    if (room.initializedAt !== null) return false;
++    room.initializedAt = new Date().toISOString();
++    this.persist(room);
++    return true;
++  }
++
++  /** Whether this room's canonical document has already been seeded. */
++  isInitialized(id: string): boolean {
++    return this.rooms.get(id)?.initializedAt !== null &&
++      this.rooms.get(id)?.initializedAt !== undefined;
++  }
++
+   /** Cache the gzipped JSON snapshot for fast-path joiner load. */
+   setSnapshotGz(id: string, bytes: Uint8Array): boolean {
+     const room = this.rooms.get(id);
+@@ -192,6 +344,7 @@
+       idleSince: Date.now(),
+       createdAt: new Date().toISOString(),
+       passwordHash: null,
++      initializedAt: null,
+     };
+     room.clients += 1;
+     room.idleSince = -1;
+@@ -240,6 +393,9 @@
+     // a workbook; the persisted state (Y.Doc in Redis) is worth more
+     // than the registry slot it occupies.
+     if (room.xlsxSeed && room.xlsxSeed.byteLength > 0) return false;
++    // Someone has already seeded this room's document. The persisted
++    // Y.Doc behind it is worth more than the registry slot.
++    if (room.initializedAt) return false;
+     if (room.snapshotGz && room.snapshotGz.byteLength > 0) return false;
+     return true;
+   }
+diff -ruN collab-src-pristine/seed-token.ts collab-src/seed-token.ts
+--- a/src/seed-token.ts	1970-01-01 01:00:00.000000000 +0100
++++ b/src/seed-token.ts	2026-08-26 02:57:53.856767900 +0100
+@@ -0,0 +1,134 @@
++/**
++ * Capability tokens for room initialisation.
++ *
++ * `POST /api/rooms/:id/seed` decides what every future participant will
++ * open. Shipped, it took no credential at all — the reasoning in the
++ * route comment was that only the owner knows the freshly-minted room
++ * id, so the misuse window is theoretical.
++ *
++ * That holds for the instant after creation and stops holding
++ * immediately afterwards: room ids travel in share links, chat
++ * messages, browser history and access logs, and `/api/rooms` will list
++ * them. Anyone who reads one could replace the document every peer is
++ * about to load — silently, because the editor shows whatever the room
++ * says. For a school deployment that is the difference between "someone
++ * saw the essay" and "someone replaced the essay".
++ *
++ * So initialisation gets a real capability token: signed, short-lived,
++ * bound to one room and one operation, and accepted once.
++ *
++ * Deliberately separate from `auth/jwt.ts`'s `AccessClaims`, which is
++ * WOPI-shaped (sub / file_id / role) and carries permissions this
++ * operation has no use for. A capability token should say exactly one
++ * thing.
++ */
++import jwt from 'jsonwebtoken';
++
++/** The only operation these tokens authorise. */
++export const SEED_OPERATION = 'initialize_room' as const;
++
++const ALG = 'HS256';
++
++/** Default lifetime. Seeding happens seconds after room creation; a
++ *  short window bounds replay if a link leaks. */
++const DEFAULT_TTL_SECONDS = 300;
++
++export interface SeedClaims {
++  /** Room this token may seed, and only this room. */
++  room: string;
++  /** Capability, checked explicitly so a general-purpose token minted
++   *  elsewhere can never satisfy a seed request by accident. */
++  op: typeof SEED_OPERATION;
++  /** Belt and braces alongside `op` — an explicit grant reads clearly
++   *  at the call site and in logs. */
++  can_seed: true;
++  iat?: number;
++  exp?: number;
++}
++
++export class SeedTokenError extends Error {
++  constructor(
++    message: string,
++    /** Machine-readable reason. Logged server-side; NOT returned to the
++     *  caller, who gets one undifferentiated 401 — distinguishing
++     *  "expired" from "wrong room" is free reconnaissance. */
++    public readonly reason: string
++  ) {
++    super(message);
++    this.name = 'SeedTokenError';
++  }
++}
++
++function secret(): string | null {
++  const s = process.env.CASUAL_JWT_SECRET;
++  return typeof s === 'string' && s.length >= 16 ? s : null;
++}
++
++/**
++ * True when the deployment can enforce seed authentication.
++ *
++ * With no secret configured there is nothing to sign with. Rather than
++ * fail closed and break anonymous self-hosted deployments that never
++ * opted into auth, the route falls back to shipped behaviour and logs a
++ * warning once at boot. Deployments that care set CASUAL_JWT_SECRET —
++ * which the Flares lab does.
++ */
++export function isSeedAuthEnabled(): boolean {
++  return secret() !== null;
++}
++
++/** Mint a token authorising exactly one room's initialisation. */
++export function signSeedToken(room: string, ttlSeconds = DEFAULT_TTL_SECONDS): string {
++  const key = secret();
++  if (!key) throw new SeedTokenError('CASUAL_JWT_SECRET unset', 'not_configured');
++  const claims: SeedClaims = { room, op: SEED_OPERATION, can_seed: true };
++  return jwt.sign(claims, key, { algorithm: ALG, expiresIn: ttlSeconds });
++}
++
++/**
++ * Verify a token against the room it is being used on.
++ *
++ * Throws `SeedTokenError` on: missing/garbled token, bad signature,
++ * wrong algorithm, expiry, a token minted for a different room, or one
++ * carrying a different capability. `algorithms: [ALG]` is what stops an
++ * attacker re-signing the payload with `alg: none`.
++ */
++export function verifySeedToken(token: string | null | undefined, room: string): SeedClaims {
++  const key = secret();
++  if (!key) throw new SeedTokenError('CASUAL_JWT_SECRET unset', 'not_configured');
++  if (!token) throw new SeedTokenError('no seed token supplied', 'missing');
++
++  let payload: SeedClaims;
++  try {
++    payload = jwt.verify(token, key, { algorithms: [ALG] }) as SeedClaims;
++  } catch (err) {
++    const reason = err instanceof jwt.TokenExpiredError ? 'expired' : 'bad_signature';
++    throw new SeedTokenError(`seed token rejected: ${(err as Error).message}`, reason);
++  }
++
++  if (!payload || typeof payload !== 'object') {
++    throw new SeedTokenError('seed token payload not an object', 'malformed');
++  }
++  // Room binding. Without this a token for a room you own would seed
++  // any room whose id you can guess or read.
++  if (payload.room !== room) {
++    throw new SeedTokenError('seed token is for a different room', 'wrong_room');
++  }
++  if (payload.op !== SEED_OPERATION || payload.can_seed !== true) {
++    throw new SeedTokenError('token does not carry the seed capability', 'wrong_operation');
++  }
++  return payload;
++}
++
++/** Pull a seed token off a request: `x-seed-token` header, then
++ *  `?seed_token=`. Header preferred — it stays out of access logs. */
++export function extractSeedToken(req: {
++  headers: Record<string, unknown>;
++  query?: unknown;
++}): string | null {
++  const header = req.headers['x-seed-token'];
++  if (typeof header === 'string' && header.length > 0) return header;
++  const q = req.query as { seed_token?: unknown } | undefined;
++  if (q && typeof q.seed_token === 'string' && q.seed_token.length > 0) return q.seed_token;
++  return null;
++}
+diff -ruN collab-src-pristine/storage.ts collab-src/storage.ts
+--- a/src/storage.ts	2026-08-26 02:56:55.832442100 +0100
++++ b/src/storage.ts	2026-08-26 05:41:42.633815500 +0100
+@@ -16,6 +16,22 @@
+ export interface DocStorage {
+   /** Return the persisted Y.Doc update bytes for `roomId`, or null. */
+   load(roomId: string): Promise<Uint8Array | null>;
++  /**
++   * Persist a room's metadata and its starting .docx.
++   *
++   * The Y.Doc alone is not enough to bring a room back. Clients bootstrap
++   * by fetching `/api/rooms/:id/seed` before they connect, and that is
++   * served from the in-memory registry — so after a restart the document
++   * is still sitting in storage, perfectly intact, and completely
++   * unreachable: the seed 404s and the editor never mounts.
++   *
++   * Kept as separate keys rather than one blob because the seed can be
++   * tens of megabytes while the metadata is a few hundred bytes, and
++   * only the metadata is read on the hot path.
++   */
++  saveRoom(roomId: string, meta: string, seed: Uint8Array | null): Promise<void>;
++  /** Metadata + seed for `roomId`, or null if this room is unknown. */
++  loadRoom(roomId: string): Promise<{ meta: string; seed: Uint8Array | null } | null>;
+   /** Persist the full Y.Doc update for `roomId`. Called debounced on change. */
+   save(roomId: string, update: Uint8Array): Promise<void>;
+   /** Remove the persisted snapshot (room GC, manual delete). */
+@@ -26,17 +42,28 @@
+ 
+ export class InMemoryStorage implements DocStorage {
+   private store = new Map<string, Uint8Array>();
++  private rooms = new Map<string, { meta: string; seed: Uint8Array | null }>();
+   async load(roomId: string) {
+     return this.store.get(roomId) ?? null;
+   }
++  async saveRoom(roomId: string, meta: string, seed: Uint8Array | null) {
++    const existing = this.rooms.get(roomId);
++    // A metadata-only update must not drop a seed uploaded earlier.
++    this.rooms.set(roomId, { meta, seed: seed ?? existing?.seed ?? null });
++  }
++  async loadRoom(roomId: string) {
++    return this.rooms.get(roomId) ?? null;
++  }
+   async save(roomId: string, update: Uint8Array) {
+     this.store.set(roomId, update);
+   }
+   async delete(roomId: string) {
+     this.store.delete(roomId);
++    this.rooms.delete(roomId);
+   }
+   async close() {
+     this.store.clear();
++    this.rooms.clear();
+   }
+ }
+ 
+@@ -57,6 +84,22 @@
+     return buf ? new Uint8Array(buf) : null;
+   }
+ 
++  async saveRoom(roomId: string, meta: string, seed: Uint8Array | null): Promise<void> {
++    await this.redis.set(`${KEY_PREFIX}meta:${roomId}`, meta, 'EX', this.ttlSec);
++    if (seed) {
++      await this.redis.set(
++        `${KEY_PREFIX}seed:${roomId}`, Buffer.from(seed), 'EX', this.ttlSec,
++      );
++    }
++  }
++
++  async loadRoom(roomId: string): Promise<{ meta: string; seed: Uint8Array | null } | null> {
++    const meta = await this.redis.get(`${KEY_PREFIX}meta:${roomId}`);
++    if (meta === null) return null;
++    const seed = await this.redis.getBuffer(`${KEY_PREFIX}seed:${roomId}`);
++    return { meta, seed: seed ? new Uint8Array(seed) : null };
++  }
++
+   async save(roomId: string, update: Uint8Array): Promise<void> {
+     await this.redis.set(
+       KEY_PREFIX + roomId,
+@@ -67,7 +110,11 @@
+   }
+ 
+   async delete(roomId: string): Promise<void> {
+-    await this.redis.del(KEY_PREFIX + roomId);
++    await this.redis.del(
++      KEY_PREFIX + roomId,
++      `${KEY_PREFIX}meta:${roomId}`,
++      `${KEY_PREFIX}seed:${roomId}`,
++    );
+   }
+ 
+   async close(): Promise<void> {
+diff -ruN collab-src-pristine/yjs.ts collab-src/yjs.ts
+--- a/src/yjs.ts	2026-08-26 02:56:55.866606900 +0100
++++ b/src/yjs.ts	2026-08-26 05:42:30.160172300 +0100
+@@ -64,8 +64,10 @@
+     name: 'casual-collab',
+     async onLoadDocument({ documentName, document }) {
+       // 1) If the room was pre-seeded via /api/rooms (xlsx upload path),
+-      //    apply that first.
+-      const room = rooms.get(documentName);
++      //    apply that first. `rehydrate` rather than `get` so a room the
++      //    registry lost to a restart is recovered here too, not only on
++      //    the HTTP path.
++      const room = await rooms.rehydrate(documentName);
+       if (room?.seed) Y.applyUpdate(document, room.seed);
+       // 2) Restore the latest persisted state from the storage backend.
+       const persisted = await storage.load(documentName);

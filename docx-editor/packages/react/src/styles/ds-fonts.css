@@ -1,0 +1,54 @@
+/*
+ * The design system's font layer, minus the CDN.
+ *
+ * The vendored design system's `tokens/fonts.css` begins with two
+ * `@import url('https://fonts.googleapis.com/…')` lines: three text families
+ * (Inter, JetBrains Mono, Manrope) and the full ~3.8 MB Material Symbols
+ * variable font. So every load of the editor told Google that a particular IP
+ * address had opened a document, and the Referer named the page. The users
+ * here are schoolchildren. That is not ours to give away.
+ *
+ * It could not simply be edited out: the design system is a git submodule
+ * pointing at a repository this fork does not own, so a fix there would not
+ * survive a clean clone -- and CSS gives you no way to cancel an `@import`
+ * from outside. So the fork stops importing the submodule's barrel, imports
+ * the five token files it actually wants, and supplies this file in place of
+ * the sixth. The submodule stays untouched and the fix travels with the fork.
+ *
+ * What is lost: Inter, JetBrains Mono and Manrope as webfonts. Nothing else.
+ * `--font-sans`, `--font-mono` and `--font-display` in the submodule's
+ * typography.css already name a native stack behind each of them (Segoe UI,
+ * -apple-system, Helvetica Neue, and a generic family last), so UI text falls
+ * through to the platform's own font: no round trip, and it looks native.
+ *
+ * Document typography is a different question and is not affected. Those faces
+ * -- Carlito, Caladea, the Liberation family -- are metric-compatible with the
+ * Office fonts and are bundled in fonts.css, which is what keeps line breaks
+ * and pagination identical to Word.
+ *
+ * The icon font is genuinely needed, and is genuinely bundled: the app shell
+ * declares an @font-face over a ~88 KB HarfBuzz-verified subset containing
+ * only the ligatures this app renders. The CDN import had registered the same
+ * family name and quietly defeated that subset.
+ */
+
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings:
+    'FILL' 0,
+    'wght' 400,
+    'GRAD' 0,
+    'opsz' 24;
+}

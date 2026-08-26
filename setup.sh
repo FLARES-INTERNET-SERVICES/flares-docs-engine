@@ -15,6 +15,13 @@
 #   2. `katex` is imported by the editor but not pulled in by the workspace
 #      resolve, so Vite's dependency scan fails without it.
 #
+#   3. The collaboration server is the `collab` submodule, pointing at a
+#      repository this fork does not own. Five of the fork's patches change it
+#      — including the one that stops anyone from replacing the contents of a
+#      document by POSTing to a room id they happened to learn. They are
+#      carried as patches/collab-server.patch and applied here, because a
+#      clone that quietly skipped them would look repaired and not be.
+#
 # Usage:
 #   ./setup.sh              install and build
 #   ./setup.sh --dev        the above, then start the dev server
@@ -30,6 +37,25 @@ say "Submodules"
 git -c url."https://github.com/".insteadOf="git@github.com:" \
     submodule update --init --recursive
 echo "  design-system: $(ls docx-editor/vendor/design-system 2>/dev/null | wc -l) entries"
+echo "  collab:        $(ls collab/src 2>/dev/null | wc -l) entries"
+
+say "Collaboration server patches"
+# Idempotent: --check tells us whether the patch still needs applying, so
+# re-running setup.sh does not fail on an already-patched tree. `-R --check`
+# distinguishes "already applied" from "no longer applies", which are very
+# different problems and deserve different messages.
+if git -C collab apply --check ../patches/collab-server.patch 2>/dev/null; then
+    git -C collab apply ../patches/collab-server.patch
+    echo "  applied patches/collab-server.patch"
+elif git -C collab apply -R --check ../patches/collab-server.patch 2>/dev/null; then
+    echo "  already applied, left alone"
+else
+    echo "  !! patches/collab-server.patch no longer applies to collab@$(git -C collab rev-parse --short HEAD)"
+    echo "     The submodule has moved under it. See patches/README.md — the"
+    echo "     answer is usually to drop a patch upstream has fixed, not to"
+    echo "     force this one. Continuing WITHOUT the server fixes; seeding is"
+    echo "     unauthenticated until this is resolved."
+fi
 
 command -v bun >/dev/null 2>&1 || {
     echo "bun is required — see https://bun.sh (or: npm i -g bun)"

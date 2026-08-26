@@ -28,13 +28,23 @@
 
 /* Casual design system tokens (@schnsrw/design-system), vendored as a git
  * submodule at docx-editor/vendor/design-system. The committed dist/ is the
- * source of truth — no build step. This barrel pulls in colors, typography,
- * spacing/radius/shadow, motion, the docs accent override ([data-app='docs'])
- * and the Inter + Material Symbols webfonts. Imported here so the Tailwind CLI
- * inlines the tokens straight into the published dist/styles.css (the package
- * isn't on npm, so consumers must not need it at runtime). The doc editor maps
- * its own --doc-* vars onto these DS tokens below. */
-@import '../../../../vendor/design-system/dist/tokens.css';
+ * source of truth — no build step. Imported here so the Tailwind CLI inlines
+ * the tokens straight into the published dist/styles.css (the package isn't on
+ * npm, so consumers must not need it at runtime). The doc editor maps its own
+ * --doc-* vars onto these DS tokens below.
+ *
+ * The five files are named individually rather than taken through the
+ * submodule's `tokens.css` barrel, which also pulls `tokens/fonts.css` — and
+ * that file fetches Inter, JetBrains Mono, Manrope and the whole Material
+ * Symbols variable font from Google's CDN. See ds-fonts.css, which replaces
+ * it, for why that had to stop and what it costs (very little). Adding the
+ * barrel back would silently reinstate all four requests. */
+@import '../../../../vendor/design-system/dist/tokens/colors.css';
+@import '../../../../vendor/design-system/dist/tokens/typography.css';
+@import '../../../../vendor/design-system/dist/tokens/spacing.css';
+@import '../../../../vendor/design-system/dist/tokens/motion.css';
+@import '../../../../vendor/design-system/dist/tokens/editor-theme.css';
+@import './ds-fonts.css';
 
 @tailwind utilities;
 

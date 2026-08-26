@@ -33,6 +33,22 @@ export interface AutosaveRestoreBannerProps {
    * suppress the banner so we don't clobber the user's typing.
    */
   suppress?: boolean;
+  /**
+   * Which document's recovery record to look for. Without it the banner
+   * reads the shared single slot, and a draft of one document is offered
+   * against another.
+   */
+  documentId?: string;
+  /**
+   * The revision the host has durably stored.
+   *
+   * A record written at or below this has already reached durable storage —
+   * the work is safe, and offering to "restore" it would roll the document
+   * back to an older copy of itself. That is the whole failure this gate
+   * exists to prevent, and it is why a document that saved perfectly used to
+   * greet its author with "restore unsaved changes?" on every reload.
+   */
+  durableRevision?: number;
 }
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000; // 24 h
@@ -87,14 +103,19 @@ const SECONDARY_BTN_STYLE: CSSProperties = {
   flexShrink: 0,
 };
 
-export function AutosaveRestoreBanner({ onRestore, suppress }: AutosaveRestoreBannerProps) {
+export function AutosaveRestoreBanner({
+  onRestore,
+  suppress,
+  documentId,
+  durableRevision,
+}: AutosaveRestoreBannerProps) {
   const [rec, setRec] = useState<AutosaveRecord | null>(null);
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const r = await readAutosave();
+      const r = await readAutosave(documentId);
       if (cancelled) return;
       if (!r) {
         setRec(null);
@@ -102,7 +123,26 @@ export function AutosaveRestoreBanner({ onRestore, suppress }: AutosaveRestoreBa
       }
       // Age gate — drop stale snapshots silently.
       if (Date.now() - r.savedAt > STALE_AFTER_MS) {
-        await clearAutosave();
+        await clearAutosave(documentId);
+        setRec(null);
+        return;
+      }
+      // Identity gate. A record from a different document must never be
+      // offered against this one, however recent it is -- restoring it would
+      // replace the open document with an unrelated one.
+      if (documentId !== undefined && r.documentId !== undefined && r.documentId !== documentId) {
+        setRec(null);
+        return;
+      }
+      // Durability gate. The host has this revision safely stored, so there is
+      // nothing to recover: silently drop it rather than asking a user to
+      // adjudicate between two copies of work that is not at risk.
+      if (
+        durableRevision !== undefined &&
+        r.durableRevision !== undefined &&
+        r.durableRevision <= durableRevision
+      ) {
+        await clearAutosave(documentId);
         setRec(null);
         return;
       }
@@ -114,7 +154,8 @@ export function AutosaveRestoreBanner({ onRestore, suppress }: AutosaveRestoreBa
     // Read on mount only — the banner is a "boot-time prompt", not a
     // live subscription. Re-reading every render would race with
     // discard/restore actions.
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentId]);
 
   if (!rec || dismissed || suppress) return null;
 
@@ -132,7 +173,7 @@ export function AutosaveRestoreBanner({ onRestore, suppress }: AutosaveRestoreBa
         data-testid="autosave-restore"
         onClick={async () => {
           onRestore(rec.buffer, rec.name);
-          await clearAutosave();
+          await clearAutosave(documentId);
           setDismissed(true);
         }}
       >
@@ -143,7 +184,7 @@ export function AutosaveRestoreBanner({ onRestore, suppress }: AutosaveRestoreBa
         style={SECONDARY_BTN_STYLE}
         data-testid="autosave-discard"
         onClick={async () => {
-          await clearAutosave();
+          await clearAutosave(documentId);
           setDismissed(true);
         }}
       >

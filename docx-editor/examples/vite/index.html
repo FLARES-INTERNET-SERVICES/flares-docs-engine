@@ -230,59 +230,9 @@
       }
     </style>
 
-    <script>
-      // Detect when Material Symbols font is loaded
-      if (document.fonts) {
-        document.fonts.ready.then(function () {
-          document.documentElement.classList.add('fonts-loaded');
-        });
-        document.fonts.load('24px "Material Symbols Outlined"').then(function () {
-          document.documentElement.classList.add('fonts-loaded');
-        });
-      } else {
-        setTimeout(function () {
-          document.documentElement.classList.add('fonts-loaded');
-        }, 500);
-      }
-
-      // Stale-deploy recovery — after a fresh build, the previous
-      // index.html still points at chunks with old hashes; the first
-      // navigation that lazy-loads one of those chunks gets a 404 and
-      // crashes the editor. We catch the typed Vite preloadError event
-      // (and the generic "Failed to fetch dynamically imported module"
-      // unhandledrejection from non-Vite chunks) and force-reload the
-      // page, which re-fetches index.html and the current hash refs.
-      // The session-storage guard stops us from looping if the reload
-      // itself fails for an unrelated reason.
-      (function () {
-        var KEY = 'casual:chunk-reload-at';
-        function shouldReload() {
-          try {
-            var last = parseInt(sessionStorage.getItem(KEY) || '0', 10);
-            return Date.now() - last > 20000;
-          } catch (_) {
-            return true;
-          }
-        }
-        function reloadOnce() {
-          try {
-            sessionStorage.setItem(KEY, String(Date.now()));
-          } catch (_) {}
-          window.location.reload();
-        }
-        window.addEventListener('vite:preloadError', function (e) {
-          if (!shouldReload()) return;
-          e.preventDefault();
-          reloadOnce();
-        });
-        window.addEventListener('unhandledrejection', function (e) {
-          var msg = e && e.reason && (e.reason.message || String(e.reason));
-          if (msg && /Failed to fetch dynamically imported module/i.test(msg) && shouldReload()) {
-            reloadOnce();
-          }
-        });
-      })();
-    </script>
+    <!-- Boot shims. A file, not inline: see public/boot.js, and the
+         `script-src 'self'` policy the collab server sends. -->
+    <script src="/boot.js"></script>
   </head>
   <body>
     <div id="app">

@@ -21,7 +21,22 @@
 
 import { openDocsDb, STORE_AUTOSAVE as STORE } from './idb';
 
-const KEY = 'current';
+/**
+ * The slot used when the host gives no document identity.
+ *
+ * Historically this was the ONLY key: one record per origin, whatever
+ * document produced it. That is wrong in two directions — a draft of one
+ * document is offered against another, and opening a second document
+ * destroys the first one's safety net. Hosts that pass a `documentId` get a
+ * slot of their own; `'current'` remains for single-document use so existing
+ * behaviour is unchanged when no id is supplied.
+ */
+const DEFAULT_KEY = 'current';
+
+/** Records are per document, so a rename must not create a second one. */
+function keyFor(documentId?: string): string {
+  return documentId && documentId !== '' ? `doc:${documentId}` : DEFAULT_KEY;
+}
 
 export interface AutosaveRecord {
   /** Document name at the time of save — used in the restore prompt. */
@@ -30,17 +45,34 @@ export interface AutosaveRecord {
   buffer: ArrayBuffer;
   /** Wall-clock ms at save time — for the restore prompt copy. */
   savedAt: number;
+  /**
+   * Stable identity of the document this belongs to, when the host supplies
+   * one. Deliberately not the filename: renaming a document must not orphan
+   * its recovery record, and two documents that happen to share a name must
+   * not share one.
+   */
+  documentId?: string;
+  /**
+   * The durable revision the host had acknowledged when this was written.
+   *
+   * This is what makes a recovery record answerable. On reopening, a host
+   * that has since durably stored a NEWER revision knows this copy is
+   * already superseded — and offering to "restore" it would roll the
+   * document backwards, which is the failure mode a recovery feature exists
+   * to prevent.
+   */
+  durableRevision?: number;
 }
 
 const openDb = openDocsDb;
 
-export async function readAutosave(): Promise<AutosaveRecord | null> {
+export async function readAutosave(documentId?: string): Promise<AutosaveRecord | null> {
   if (typeof window === 'undefined' || typeof indexedDB === 'undefined') return null;
   try {
     const db = await openDb();
     return await new Promise<AutosaveRecord | null>((resolve, reject) => {
       const tx = db.transaction(STORE, 'readonly');
-      const req = tx.objectStore(STORE).get(KEY);
+      const req = tx.objectStore(STORE).get(keyFor(documentId));
       req.onsuccess = () => resolve((req.result as AutosaveRecord | undefined) ?? null);
       req.onerror = () => reject(req.error ?? new Error('read failed'));
     });
@@ -60,7 +92,7 @@ export async function writeAutosave(rec: AutosaveRecord): Promise<void> {
     const db = await openDb();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).put(rec, KEY);
+      tx.objectStore(STORE).put(rec, keyFor(rec.documentId));
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('write failed'));
     });
@@ -71,13 +103,13 @@ export async function writeAutosave(rec: AutosaveRecord): Promise<void> {
   }
 }
 
-export async function clearAutosave(): Promise<void> {
+export async function clearAutosave(documentId?: string): Promise<void> {
   if (typeof window === 'undefined' || typeof indexedDB === 'undefined') return;
   try {
     const db = await openDb();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).delete(KEY);
+      tx.objectStore(STORE).delete(keyFor(documentId));
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('clear failed'));
     });

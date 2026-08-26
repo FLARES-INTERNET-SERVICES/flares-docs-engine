@@ -2,8 +2,12 @@
 
 ## Reporting a vulnerability
 
-Email **security@flaresinc.com**. Please do not open a public issue for
-anything exploitable.
+Use **[private vulnerability reporting](https://github.com/FLARES-INTERNET-SERVICES/flares-docs-engine/security/advisories/new)**
+on this repository. Please do not open a public issue for anything exploitable.
+
+That route is preferred because it exists as long as the repository does and it
+does not depend on a mailbox staying staffed. If you cannot use it, mail
+`security@flaresinc.com`.
 
 Include enough to reproduce it — a document, a sequence, a request. If you have
 a proof of concept, say what it does before attaching it.

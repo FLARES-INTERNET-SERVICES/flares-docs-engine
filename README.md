@@ -41,7 +41,7 @@ dependency you cannot trust.
 Requires [Bun](https://bun.sh) and Docker.
 
 ```bash
-git clone https://github.com/flaresinc/flares-docs-engine.git
+git clone https://github.com/FLARES-INTERNET-SERVICES/flares-docs-engine.git
 cd flares-docs-engine
 ./setup.sh --in-place        # submodules, dependencies, .env.local
 ```

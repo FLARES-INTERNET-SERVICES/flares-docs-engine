@@ -1932,6 +1932,13 @@ function CollabApp({
           // disagreeing with each other. `?chrome=minimal` lets the host say
           // it is providing that itself; the menus stay either way.
           features={hostProvidesChrome ? { titleBar: false } : undefined}
+          // In a collaborative room the server holds the document, so the
+          // editor's own browser-local .docx copy is redundant -- and, being
+          // unacknowledgeable, it would offer to "restore unsaved changes" on
+          // every reload of a document that saved perfectly. Scope what is
+          // kept to this room either way, so one document's draft is never
+          // offered against another.
+          recovery={{ documentId: room, hostOwnsDurability: hostProvidesChrome }}
           // `document` + `externalContent`, not `documentBuffer`: the
           // parsed document supplies styles, media, headers and section
           // properties for export, while ySyncPlugin owns the body

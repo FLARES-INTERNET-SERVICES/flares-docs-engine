@@ -593,6 +593,45 @@ export interface DocxEditorProps {
    */
   externalContent?: boolean;
   /**
+   * How crash recovery should behave when something other than the browser
+   * is responsible for keeping the document safe.
+   *
+   * The editor's own safety net is a whole-document `.docx` written to
+   * IndexedDB every 30 seconds while dirty, offered back on the next mount.
+   * That is right for a standalone editor with nowhere else to put the work.
+   * It is wrong — actively harmful — when a host is durably storing the
+   * document server-side:
+   *
+   *   * the local copy is never acknowledged by anything, so a document that
+   *     saved perfectly still greets its author with "restore unsaved
+   *     changes?" on every reload;
+   *   * the record is keyed per ORIGIN, so one document's draft is offered
+   *     against another;
+   *   * restoring it replaces the live collaborative document with an older
+   *     local buffer, losing everyone else's edits.
+   *
+   * A host that owns durability says so here. The same reasoning already
+   * applies to the desktop shell, which writes sidecar files and disables
+   * this path for exactly these reasons.
+   */
+  recovery?: {
+    /**
+     * Stable identity for this document. Not the filename — renaming must
+     * not orphan the record, and a copy must not inherit the original's.
+     */
+    documentId?: string;
+    /**
+     * The host is keeping this document safe. The editor stops writing its
+     * own `.docx` copy and stops offering to restore one.
+     */
+    hostOwnsDurability?: boolean;
+    /**
+     * The revision the host has durably stored. Any local record at or below
+     * it is already safe and is discarded rather than offered.
+     */
+    durableRevision?: number;
+  };
+  /**
    * Collab transport for footnote-text edits. Footnotes aren't in the
    * ProseMirror document, so they don't ride ySyncPlugin; the host wires this
    * to a shared map (e.g. the `footnotes` Y.Map from `useCollab`) so footnote
@@ -1927,6 +1966,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     externalPlugins,
     editorExtensions,
     externalContent = false,
+    recovery,
     footnoteSync,
     endnoteSync,
     propsSync,
@@ -7777,11 +7817,17 @@ body { background: white; }
           // files-stay-on-disk model. Web keeps the IDB autosave.
           const onDesktop = !!(window as { __deskApp__?: { isDesktop?: boolean } }).__deskApp__
             ?.isDesktop;
-          if (!onDesktop) {
+          // Same reasoning as the desktop guard directly above: when
+          // something else is durably keeping this document, a second whole
+          // copy in browser storage is redundant, unacknowledgeable, and able
+          // to roll the document backwards if it is ever restored.
+          if (!onDesktop && !recovery?.hostOwnsDurability) {
             await writeAutosave({
               name: documentName?.trim() || 'Untitled',
               buffer,
               savedAt: Date.now(),
+              documentId: recovery?.documentId,
+              durableRevision: recovery?.durableRevision,
             });
           }
         } catch {
@@ -7792,7 +7838,7 @@ body { background: white; }
     };
     const interval = window.setInterval(tick, 30_000);
     return () => window.clearInterval(interval);
-  }, [handleSave, documentName, markDirty]);
+  }, [handleSave, documentName, markDirty, recovery]);
 
   // File → Make a copy: download the current content as "Copy of <name>.docx".
   // The original document is unchanged, so we don't touch the dirty flag.
@@ -9885,14 +9931,17 @@ body { background: white; }
                     shows its own restore UI. IndexedDB autosave is also
                     disabled on desktop (see onDesktop guard above). */}
                   {!(window as { __deskApp__?: { isDesktop?: boolean } }).__deskApp__
-                    ?.isDesktop && (
-                    <AutosaveRestoreBanner
-                      onRestore={(buf, name) => {
-                        void loadBuffer(buf);
-                        onDocumentNameChange?.(name);
-                      }}
-                    />
-                  )}
+                    ?.isDesktop &&
+                    !recovery?.hostOwnsDurability && (
+                      <AutosaveRestoreBanner
+                        documentId={recovery?.documentId}
+                        durableRevision={recovery?.durableRevision}
+                        onRestore={(buf, name) => {
+                          void loadBuffer(buf);
+                          onDocumentNameChange?.(name);
+                        }}
+                      />
+                    )}
 
                   {/* Below-toolbar horizontal row: scroll container + the floating
                     PanelRail. position:relative anchors the rail's absolute

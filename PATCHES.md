@@ -276,6 +276,133 @@ example app reads `?chrome=minimal` to request it.
 
 ---
 
+## P010 — "Saved" and "restore an old copy?" on the same screen
+
+**Where:** `packages/react/src/utils/autosave.ts`,
+`packages/react/src/components/AutosaveRestoreBanner.tsx`,
+`packages/react/src/components/DocxEditor.tsx`, `examples/vite/src/App.tsx`
+
+**The problem.** A document that had saved perfectly greeted its author on
+every reload with *"Unsaved changes from lesson.docx (36 min ago) — restore
+them?"*, while the same screen said the work was saved. Two claims about the
+same document, one of them false, and the reader has no way to tell which.
+
+The cause is that the editor's crash-recovery copy is unacknowledgeable. Every
+30 seconds while dirty it serialises the whole `.docx` into IndexedDB, and
+**nothing in any save path ever clears it** — only the banner does, when the
+reader answers it, or a 24-hour age check. A successful save is invisible to
+the mechanism. It was also keyed `'current'`, one slot per **origin**, so one
+document's draft was offered against a different document.
+
+**What it does.** Two things, neither of which is hiding the banner:
+
+- The record is scoped to the document (`doc:<id>`) and carries the revision
+  it was taken at. The banner refuses a record belonging to another document,
+  and discards one whose revision the server has already superseded. This
+  alone fixes the standalone editor.
+- A host that owns durability says so (`recovery.hostOwnsDurability`), and
+  then the local copy is **not written at all**. There is nothing to offer,
+  because a collaborative room already holds the document server-side. This is
+  the same reasoning the desktop shell already used to disable it.
+
+**If dropped:** the editor tells children their work is both safe and at risk,
+and eventually one of them restores a stale copy over newer work.
+
+---
+
+## P011 — Every load fetched fonts from Google
+
+**Where:** `packages/core/src/utils/fontLoader.ts`,
+`packages/react/src/styles/ds-fonts.css`, `packages/react/src/styles/editor.css`,
+`examples/vite/index.html`, `examples/vite/public/boot.js`
+
+**The problem.** Opening a document made four requests to `fonts.googleapis.com`
+and `fonts.gstatic.com`. A font request carries the reader's IP address and a
+Referer naming the page they are on, so a third party was a witness to every
+document anyone opened. The readers here are schoolchildren.
+
+Three separate sources, only one of which a grep would have found:
+
+- `fontLoader.ts` injected a `<link>` per font family named in a document's
+  font table — one request per family, at open time.
+- The vendored design system's `tokens/fonts.css` `@import`ed Inter, JetBrains
+  Mono and Manrope.
+- The same file also imported the **full ~3.8 MB Material Symbols variable
+  font**, registering the same family name as the app's own bundled ~88 KB
+  subset and silently defeating it.
+
+**What it does.** Removes the CDN path from the loader entirely: a family
+declared by a bundled `@font-face` is loaded from disk, and anything else
+returns false so the caller's CSS fallback stack decides. Replaces the design
+system's font layer with `ds-fonts.css`, keeping the icon-font rules and
+dropping the imports. The three UI families fall through to the native stack
+that `--font-sans`/`--font-mono`/`--font-display` already named behind them.
+
+Document fidelity is untouched: Carlito, Caladea and the Liberation family are
+metric-compatible and were already bundled, so line breaks and pagination are
+unchanged. `tests/regressions/no-external-requests.mjs` drives a real browser
+and fails on any off-origin request.
+
+The design system is a submodule of a repository this fork does not own, so
+the fix deliberately lives in the fork's own tree — the submodule is
+untouched, and a clean clone still gets the fix.
+
+**If dropped:** a document editor for schools reports its readers to a third
+party on every page load.
+
+---
+
+## P012 — No Content-Security-Policy, and inline script that needed one
+
+**Where:** `collab/src/index.ts`, `examples/vite/index.html`,
+`examples/vite/public/boot.js`
+
+**The problem.** The editor origin sent no CSP at all. That matters most when
+the editor is embedded: a framed document gets the **frame's** policy, not the
+parent's, so a host with a tight policy is still undermined by a permissive
+frame.
+
+**What it does.** Sends a policy on HTML responses only, written from what the
+editor demonstrably needs rather than by loosening directives until the
+console went quiet. `script-src 'self'` with no `unsafe-eval` and no wildcard;
+`font-src 'self' data:` with no external host; `object-src 'none'`.
+`style-src` keeps `'unsafe-inline'`, which is the single relaxation and an
+argued one — painting a document *is* writing style attributes on thousands of
+runs.
+
+`frame-ancestors` comes from `FRAME_ANCESTORS` and defaults to `'none'`. It is
+a knob rather than a hostname because the editor must not know the name of any
+host application.
+
+Enforcing it surfaced a real defect: `index.html` carried inline script,
+including the **stale-deploy chunk-recovery handler**. Blocked, a user on a
+stale deploy gets a dead editor and no automatic recovery. The fix moves the
+code to `public/boot.js` — a served file, still a classic script in `<head>`
+so it runs before the module bundle — rather than adding `'unsafe-inline'` to
+buy back sixty lines of shim.
+
+**If dropped:** an embedded editor has no policy, and the host's own policy
+does not cover it.
+
+---
+
+## P013 — "Minimal chrome" still drew someone else's logo
+
+**Where:** `packages/react/src/components/TitleBar.tsx`
+
+**The problem.** P009 let a host hide the title bar. The title bar's left
+column then fell back to a default document icon, so a host that had supplied
+its own header got an unrelated product's logo directly beneath it.
+
+**What it does.** Renders the logo column only when a logo was actually
+supplied, or when the title bar is carrying a document name of its own. A host
+that suppressed the title bar gets nothing there; a host that simply did not
+pass a mark still gets the stand-in.
+
+**If dropped:** two product identities stacked on one screen.
+
+---
+
 ## Fork burden: **LOW**
 
 Rebased onto `origin/main` at `d1160518` — **72 upstream commits touching

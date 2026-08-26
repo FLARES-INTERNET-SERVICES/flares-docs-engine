@@ -3,75 +3,36 @@
  */
 
 /**
- * Google Fonts Loader
+ * Font loader.
  *
- * Dynamically loads fonts from Google Fonts API with:
- * - Loading state tracking
- * - Duplicate prevention
- * - Callback notifications
- * - Font availability detection
+ * Every font this editor can render is bundled with it. Nothing is fetched
+ * from a third-party CDN — not Google Fonts, not anything else. A document
+ * opened here makes no request that tells an outside party who is reading it,
+ * which matters because the readers are schoolchildren.
+ *
+ * Practically this means: a family declared by a bundled `@font-face` (the
+ * Croscore/Liberation metric-compatible set in fonts.css) is loaded from disk;
+ * anything else falls through to `fontResolver`'s CSS fallback stack, which
+ * always ends in a generic family, so text still renders in something
+ * sensible. Layout stays deterministic offline, on a school network that
+ * blocks Google, and in a Tauri webview.
  */
 
-// Track loaded fonts to avoid duplicate requests
+// Families confirmed available, so we ask the browser only once.
 const loadedFonts = new Set<string>();
-
-// Track fonts currently being loaded
-const loadingFonts = new Map<string, Promise<boolean>>();
 
 // Callbacks to notify when fonts are loaded
 const loadCallbacks = new Set<(fonts: string[]) => void>();
 
-// Track overall loading state
-let isLoadingAny = false;
-
 /**
- * Generate Google Fonts CSS URL for a font family
- *
- * @param fontFamily - The font family name (e.g., "Roboto", "Open Sans")
- * @param weights - Font weights to load (default: 400, 700)
- * @param styles - Font styles to load (default: normal, italic)
- * @returns Google Fonts CSS URL
- */
-function getGoogleFontsUrl(
-  fontFamily: string,
-  weights: number[] = [400, 700],
-  styles: ('normal' | 'italic')[] = ['normal', 'italic']
-): string {
-  // Encode font family name for URL
-  const encodedFamily = encodeURIComponent(fontFamily);
-
-  // Build weight/style combinations
-  // Format: ital,wght@0,400;0,700;1,400;1,700
-  const combinations: string[] = [];
-
-  for (const style of styles) {
-    const italVal = style === 'italic' ? 1 : 0;
-    for (const weight of weights) {
-      combinations.push(`${italVal},${weight}`);
-    }
-  }
-
-  // Sort and join
-  combinations.sort();
-  const spec = combinations.join(';');
-
-  return `https://fonts.googleapis.com/css2?family=${encodedFamily}:ital,wght@${spec}&display=swap`;
-}
-
-/**
- * Load a font from Google Fonts
+ * Make a font available, if we ship it.
  *
  * @param fontFamily - The font family name to load
- * @param options - Optional configuration
- * @returns Promise resolving to true if font loaded successfully, false otherwise
+ * @returns true if the family is bundled and now ready; false if it is not
+ *          ours to provide, in which case the caller's CSS fallback stack
+ *          decides what the reader sees.
  */
-export async function loadFont(
-  fontFamily: string,
-  options?: {
-    weights?: number[];
-    styles?: ('normal' | 'italic')[];
-  }
-): Promise<boolean> {
+export async function loadFont(fontFamily: string): Promise<boolean> {
   // Skip font loading in non-browser environments (Node.js, SSR)
   if (typeof document === 'undefined') {
     return false;
@@ -85,11 +46,8 @@ export async function loadFont(
     return true;
   }
 
-  // Self-hosted first: if this family is already declared via a bundled
-  // `@font-face` (Carlito/Caladea/Liberation, shipped in fonts.css), load it
-  // from the local woff2 instead of fetching from the Google CDN. This is what
-  // keeps rendering deterministic offline and in regions where Google is
-  // blocked — no third-party request, no IP leak.
+  // Bundled only. If this family is declared by an `@font-face` in fonts.css
+  // (Carlito/Caladea/Liberation), load it from the local woff2.
   if ('fonts' in document) {
     const declared = Array.from(document.fonts).some(
       (ff) => ff.family.replace(/['"]/g, '').toLowerCase() === normalizedFamily.toLowerCase()
@@ -106,89 +64,17 @@ export async function loadFont(
     }
   }
 
-  // Currently loading? Return existing promise
-  const existingLoad = loadingFonts.get(normalizedFamily);
-  if (existingLoad) {
-    return existingLoad;
-  }
-
-  // Create load promise
-  const loadPromise = (async (): Promise<boolean> => {
-    isLoadingAny = true;
-
-    try {
-      // Skip Google Fonts CDN in Tauri desktop — the webview's CSP blocks
-      // external requests, causing a 5 s timeout. Bundled @font-face fonts
-      // were already handled by the self-hosted guard above; for everything
-      // else the browser falls back to system fonts immediately.
-      if ((window as Window & { __TAURI__?: unknown }).__TAURI__) {
-        return false;
-      }
-
-      // Generate Google Fonts URL
-      const url = getGoogleFontsUrl(normalizedFamily, options?.weights, options?.styles);
-
-      // Create link element
-      const link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = url;
-
-      // Wait for load or error
-      const loaded = await new Promise<boolean>((resolve) => {
-        link.onload = () => resolve(true);
-        link.onerror = () => resolve(false);
-
-        // Append to head
-        document.head.appendChild(link);
-
-        // Timeout after 5 seconds
-        setTimeout(() => resolve(false), 5000);
-      });
-
-      if (loaded) {
-        // Wait a bit for the font to be available
-        await waitForFontAvailable(normalizedFamily, 3000);
-
-        loadedFonts.add(normalizedFamily);
-
-        // Notify callbacks
-        notifyCallbacks([normalizedFamily]);
-
-        return true;
-      }
-
-      return false;
-    } catch (error) {
-      console.warn(`Failed to load font "${normalizedFamily}":`, error);
-      return false;
-    } finally {
-      loadingFonts.delete(normalizedFamily);
-
-      // Check if still loading any fonts
-      if (loadingFonts.size === 0) {
-        isLoadingAny = false;
-      }
-    }
-  })();
-
-  loadingFonts.set(normalizedFamily, loadPromise);
-  return loadPromise;
+  // Not one of ours. Say so rather than reaching out for it: the fallback
+  // stack from `fontResolver` names the original Office font first (present on
+  // most desktops) and ends in a generic family, so the text renders either
+  // way.
+  return false;
 }
 
 /**
- * Load multiple fonts from Google Fonts
- *
- * @param families - Array of font family names to load
- * @param options - Optional configuration
- * @returns Promise resolving when all fonts are loaded (or failed)
+ * Make several fonts available. Families we do not bundle are skipped.
  */
-export async function loadFonts(
-  families: string[],
-  options?: {
-    weights?: number[];
-    styles?: ('normal' | 'italic')[];
-  }
-): Promise<void> {
+export async function loadFonts(families: string[]): Promise<void> {
   // Filter out already loaded fonts
   const toLoad = families.filter((family) => !loadedFonts.has(family.trim()));
 
@@ -197,7 +83,7 @@ export async function loadFonts(
   }
 
   // Load all fonts in parallel
-  await Promise.all(toLoad.map((family) => loadFont(family, options)));
+  await Promise.all(toLoad.map((family) => loadFont(family)));
 }
 
 /**
@@ -211,12 +97,14 @@ export function isFontLoaded(fontFamily: string): boolean {
 }
 
 /**
- * Check if any fonts are currently loading
+ * Whether a font fetch is in flight.
  *
- * @returns true if any fonts are loading, false otherwise
+ * Always false: there is no fetch. Fonts come from the bundle, and callers
+ * that used this to show a "loading fonts" state have nothing to wait for.
+ * Kept so those call sites keep compiling and simply never spin.
  */
 export function isLoading(): boolean {
-  return isLoadingAny;
+  return false;
 }
 
 /**
@@ -398,8 +286,11 @@ export async function loadFontFromBuffer(
  * but these are close alternatives that work well for document rendering.
  */
 export const FONT_MAPPING: Record<string, string> = {
-  // Microsoft Office fonts → bundled OFL equivalents (self-hosted; loaded
-  // locally via the @font-face guard in loadFont, no CDN fetch).
+  // Microsoft Office fonts → their OFL substitutes. The first five are
+  // bundled and metric-compatible, so those documents lay out exactly. The
+  // rest name a substitute we do NOT ship; they resolve through the CSS
+  // fallback stack instead, and are kept here only so the font picker can
+  // describe what a reader without the original will actually see.
   Calibri: 'Carlito',
   Cambria: 'Caladea',
   Arial: 'Liberation Sans',
