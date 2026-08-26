@@ -11,7 +11,7 @@ revision inside app image `casualoffice/docs@sha256:0f9892411476f45a…`
 
 **Tagged:** `0.0.5-flares.1`.
 
-**Totals:** 15 patches.
+**Totals:** 16 patches.
 
 | | Files | +/− |
 | --- | --- | --- |
@@ -45,6 +45,7 @@ ProseMirror schema and the layout engine are untouched.
 | **P013** | "Minimal chrome" still drew a stand-in logo | editor package | 1 | +14 / −3 | yes |
 | **P014** | `beforeunload` warned about saved work | editor package | 1 | +16 / −2 | yes, strongly |
 | **P015** | Version history keyed by document name | editor package | 2 | +26 / −4 | yes |
+| **P016** | "Minimal chrome" hid the collaborators | editor package | 2 | +14 / −2 | yes |
 
 ---
 
@@ -418,6 +419,28 @@ that suppressed the title bar gets nothing there; a host that simply did not
 pass a mark still gets the stand-in.
 
 **If dropped:** two product identities stacked on one screen.
+
+---
+
+## P016 — "Minimal chrome" also hid who else was in the document
+
+**Where:** `packages/react/src/components/features.ts`,
+`packages/react/src/components/DocxEditor.tsx`
+
+**The problem.** P009 gave hosts `titleBar: false` so their own header would
+not sit under the editor's. The presence cluster — the avatars of the other
+people editing — was in that same slot, so it went with it. An embedded
+document silently stopped showing anyone you were working with.
+
+**What it does.** Presence gets its own feature id, defaulting on. A host can
+still turn it off; suppressing the title bar no longer does it by accident.
+
+The reasoning is the same one that makes P009 right and this a bug in it:
+chrome a host **can** draw for itself (a name, a save state) is fair to
+suppress; presence is not, because the peer list exists only inside the
+editor's own collaboration session and no host can reach it.
+
+**If dropped:** collaborative editing with no sign that it is collaborative.
 
 ---
 
