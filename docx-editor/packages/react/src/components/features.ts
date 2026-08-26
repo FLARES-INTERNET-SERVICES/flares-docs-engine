@@ -34,6 +34,12 @@ export const DOCX_FEATURE_IDS = [
   // has its own title bar and its own idea of what "saved" means -- and two
   // save indicators disagreeing on one screen is worse than either alone.
   'titleBar',
+  // Who else is in the document. Deliberately NOT part of `titleBar`: a host
+  // that draws its own header still cannot show presence, because the peers
+  // are known only inside the editor's own collaboration session. Hiding it
+  // with the title bar meant an embedded document silently stopped showing
+  // the other people editing it.
+  'presence',
   'panelRail',
   // The editor's own version history. Local to one browser and keyed by the
   // document's name, so it is not the same thing as a host application's

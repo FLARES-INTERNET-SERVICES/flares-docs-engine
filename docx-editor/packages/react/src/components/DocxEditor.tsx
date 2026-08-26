@@ -2105,6 +2105,10 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   const showToolbarEffective = isFeatureEnabled(features, 'toolbar', showToolbar);
   // Default on, so nothing changes for a host that does not ask.
   const showTitleBarEffective = isFeatureEnabled(features, 'titleBar', true);
+  // Presence outlives the title bar. Knowing who else is typing is not chrome
+  // a host can supply for itself -- the peer list exists only inside this
+  // editor's collaboration session -- so `titleBar: false` must not take it.
+  const showPresenceEffective = isFeatureEnabled(features, 'presence', true);
   const showPanelRailEffective = isFeatureEnabled(features, 'panelRail', showPanelRail);
   // The editor's own version history is per browser and keyed by the
   // document's NAME — rename the document and its history is orphaned; two
@@ -9937,7 +9941,7 @@ body { background: white; }
                               editable={documentNameEditable}
                             />
                           )}
-                          {showTitleBarEffective && renderTitleBarRight && (
+                          {showPresenceEffective && renderTitleBarRight && (
                             <EditorToolbar.TitleBarRight>
                               {renderTitleBarRight()}
                             </EditorToolbar.TitleBarRight>
