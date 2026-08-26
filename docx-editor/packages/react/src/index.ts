@@ -193,6 +193,17 @@ export {
   type PeerLock,
 } from './collab/strictCoEditing';
 
+// The comment-thread transport. Already exercised by CasualEditor and
+// covered by commentSync.test.ts, but not reachable from outside the
+// package -- so a host wiring its own collab view (as examples/vite
+// does) had no way to share comment threads, and every comment stayed
+// on the machine that wrote it.
+export {
+  commentsFromMap,
+  writeCommentsToMap,
+  observeComments,
+} from './collab/commentSync';
+
 // Recent files (host-facing — call `recordRecentFile` on doc open,
 // surface `listRecentFiles` on a "Home" / "Open" screen).
 export {

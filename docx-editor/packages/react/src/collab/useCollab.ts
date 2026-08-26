@@ -62,6 +62,14 @@ export interface CollabState {
   /** The Yjs awareness instance — exposed for advanced consumers. */
   awareness: HocuspocusProvider['awareness'];
   /**
+   * The room's Y.Doc. Exposed so a host can tell an EMPTY room from one
+   * that already holds a document before deciding whether to seed it —
+   * `ydoc.getXmlFragment('prosemirror').length === 0`. Without this the
+   * host has no way to distinguish "first one here" from "joining a
+   * live session", and seeding blind would duplicate the content.
+   */
+  ydoc: Y.Doc;
+  /**
    * Shared document metadata. Lives in the same Y.Doc as the
    * editor content so it travels over the same WS, with the same
    * offline-resilience and conflict-resolution guarantees — no
@@ -321,6 +329,7 @@ export function useCollab({ room, backend, user, token }: UseCollabOptions): Col
     aiIsEditing,
     aiEditingBy,
     awareness: provider.awareness,
+    ydoc,
     metaMap,
     footnotesMap,
     endnotesMap,

@@ -29,6 +29,19 @@ import type { CSSProperties } from 'react';
 export interface ShareDialogProps {
   /** Current document buffer (the bytes the user is editing). */
   documentBuffer: ArrayBuffer | null;
+  /**
+   * Produce .docx bytes for a document that was never loaded from a
+   * file — one created with "Blank document", say, where
+   * `documentBuffer` is null because nothing was ever opened.
+   *
+   * Sharing used to refuse those outright ("No document loaded yet"),
+   * which meant a new document could not be collaborated on at all.
+   * Serializing the live document through the editor's own `save()`
+   * gives the room the same kind of starting .docx an imported document
+   * would have, so both cases take one path from here on rather than
+   * needing a second, blank-only bootstrap.
+   */
+  serializeDocument?: () => Promise<ArrayBuffer | null>;
   /** Filename to seed the room with (the live Y.Doc meta map carries the
    *  canonical name to joiners once Hocuspocus sync completes). */
   fileName: string;
@@ -150,6 +163,7 @@ const styles: Record<string, CSSProperties> = {
 
 export function ShareDialog({
   documentBuffer,
+  serializeDocument,
   fileName,
   collabHttp,
   backendWs,
@@ -170,7 +184,7 @@ export function ShareDialog({
       setCopied(false);
       return;
     }
-    if (!documentBuffer) {
+    if (!documentBuffer && !serializeDocument) {
       setErrorMsg('No document loaded yet.');
       setState('error');
       return;
@@ -178,6 +192,12 @@ export function ShareDialog({
     setState('uploading');
 
     const mintRoom = async (): Promise<string> => {
+      // Bytes for the room's starting document: the ones we opened, or
+      // else the live document serialized on the spot.
+      const seedBytes = documentBuffer ?? (await serializeDocument?.()) ?? null;
+      if (!seedBytes) {
+        throw new Error('Could not prepare this document for sharing.');
+      }
       // 1. Create a fresh transient room. No password — a casual share
       //    link is open-by-URL; the room drains when everyone leaves.
       const createRes = await fetch(`${collabHttp}/api/rooms`, {
@@ -188,18 +208,29 @@ export function ShareDialog({
       if (!createRes.ok) {
         throw new Error(`HTTP ${createRes.status}: ${await createRes.text().catch(() => '')}`);
       }
-      const { roomId } = (await createRes.json()) as { roomId: string };
+      // The server hands back a short-lived capability token alongside
+      // the id. It is the only credential that can set this room's
+      // starting document, and it is good for this room alone.
+      // `undefined` on deployments with no signing secret configured,
+      // where the endpoint keeps its original open behaviour.
+      const { roomId, seedToken } = (await createRes.json()) as {
+        roomId: string;
+        seedToken?: string;
+      };
 
       // 2. Seed the room with the current document bytes. Joiners GET
       //    these on connect to start from the same state; future edits
       //    flow through the Y.Doc.
       const formData = new FormData();
-      const blob = new Blob([documentBuffer], {
+      const blob = new Blob([seedBytes], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       });
       formData.append('file', blob, fileName || 'Untitled.docx');
       const seedRes = await fetch(`${collabHttp}/api/rooms/${encodeURIComponent(roomId)}/seed`, {
         method: 'POST',
+        // Header rather than query string: it stays out of access logs
+        // and browser history.
+        headers: seedToken ? { 'x-seed-token': seedToken } : undefined,
         body: formData,
       });
       if (!seedRes.ok) {
@@ -220,7 +251,7 @@ export function ShareDialog({
         setErrorMsg(err instanceof Error ? err.message : String(err));
         setState('error');
       });
-  }, [open, documentBuffer, fileName, collabHttp, backendWs]);
+  }, [open, documentBuffer, serializeDocument, fileName, collabHttp, backendWs]);
 
   const copy = useCallback(async () => {
     try {

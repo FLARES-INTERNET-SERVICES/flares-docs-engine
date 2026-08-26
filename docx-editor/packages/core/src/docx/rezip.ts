@@ -307,6 +307,21 @@ async function processNewImages(
     const relEntries: string[] = [];
 
     for (const image of images) {
+      // Already in the package. `collectNewImages` decides "new" purely
+      // from the `data:` src scheme, which is true of every image the
+      // parser has decoded for rendering — not just inserted ones. So an
+      // image that arrived with the document looks new whenever the
+      // content it belongs to did not come from this client's own parse
+      // (a collaborator hydrated from Yjs, for instance).
+      //
+      // Writing it again stores a byte-identical second copy and leaves
+      // the original orphaned, so every save-and-reopen cycle adds
+      // another copy of every picture — growth with no ceiling.
+      //
+      // If the relationship still resolves in this part's rels, the
+      // bytes are already here and the reference is already correct.
+      if (image.rId && relsXml.includes(`Id="${image.rId}"`)) continue;
+
       const { data, extension } = decodeDataUrl(image.src!);
 
       maxImageNum++;

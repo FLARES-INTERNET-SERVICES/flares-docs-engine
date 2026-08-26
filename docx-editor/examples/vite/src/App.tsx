@@ -10,7 +10,15 @@ import {
   createEmptyDocument,
   PresenceCluster,
 } from '@casualoffice/docs';
+// Document -> ProseMirror conversion, used to publish an imported .docx
+// into a freshly-created collaborative room. Deep import because the
+// react package does not re-export the conversion helpers.
+import { toProseDoc } from '@eigenpal/docx-core/prosemirror';
+import { parseDocx } from '@eigenpal/docx-core/docx';
 import { useCollab } from './collab/useCollab';
+// Upstream ships this transport, complete with tests, and the app never
+// called it -- so comments were created locally and reached nobody.
+import { commentsFromMap, writeCommentsToMap, observeComments } from '@casualoffice/docs';
 import { StatusBadge } from './collab/StatusBadge';
 import { ShareDialog } from './collab/Share';
 import { LoadingPanel } from './collab/LoadingPanel';
@@ -421,6 +429,16 @@ export function App() {
   }, [route.kind, legacyForcedEditor]);
   const [currentDocument, setCurrentDocument] = useState<DocxDocument | null>(null);
   const [documentBuffer, setDocumentBuffer] = useState<ArrayBuffer | null>(null);
+
+  // .docx bytes for whatever is currently open, for the share flow.
+  // Uses the editor's own serializer, so a brand-new document produces
+  // a real Word file rather than a hand-built stub — same bytes any
+  // other document would be shared with, and valid by construction.
+  const serializeCurrentDocument = useCallback(async (): Promise<ArrayBuffer | null> => {
+    const api = editorRef.current;
+    if (!api?.save) return null;
+    return api.save();
+  }, []);
   // Desktop crash-recovery: holds the unsaved-changes snapshot the host found
   // for this file when it was reopened after a crash/kill. Non-null drives the
   // "Restore unsaved changes?" banner; the user applies or discards it.
@@ -1588,6 +1606,9 @@ export function App() {
       <ShareDialog
         open={shareOpen}
         documentBuffer={documentBuffer}
+        // A document created rather than opened has no buffer; ask the
+        // editor to serialize what is on screen so it can be shared too.
+        serializeDocument={serializeCurrentDocument}
         fileName={fileName}
         collabHttp={collabHttp}
         backendWs={collabWs}
@@ -1623,9 +1644,17 @@ interface CollabAppProps {
 // Seed-fetch state. Loading is the default until the gateway hands
 // back the original .docx bytes; without those there's nothing for
 // the editor (and therefore for ySyncPlugin) to paint.
+/** Shape of a comment thread as the editor and the shared map exchange
+ *  them. Kept loose on purpose: the app is a transport, not an owner. */
+type CommentThread = { id: number; [k: string]: unknown };
+
 type SeedState =
   | { kind: 'loading' }
-  | { kind: 'ready'; buffer: ArrayBuffer; fileName: string }
+  // `doc` is the seed parsed exactly once, per client. It is handed to
+  // the editor as its base document so the editor does not parse the
+  // same bytes a second time -- two parses mean two media registries,
+  // and the serializer then writes every image twice.
+  | { kind: 'ready'; buffer: ArrayBuffer; fileName: string; doc: DocxDocument }
   | { kind: 'error'; message: string };
 
 function CollabApp({
@@ -1642,8 +1671,26 @@ function CollabApp({
   onError,
   onFontsLoaded,
 }: CollabAppProps) {
-  const { plugins, status, peers, metaMap } = useCollab({ room, backend, user });
+  const { plugins, status, peers, metaMap, ydoc, commentsMap } = useCollab({ room, backend, user });
+
+  // Comment threads ride a shared Y.Map of their own: the highlight marks
+  // live in the ProseMirror document and so travel via ySyncPlugin, but
+  // the thread content -- author, text, replies, resolved state -- is
+  // React state and would reach nobody. Drive the editor's controlled
+  // `comments` from the map and reconcile changes back into it.
+  const [collabComments, setCollabComments] = useState<CommentThread[]>([]);
+  useEffect(() => {
+    setCollabComments(commentsFromMap(commentsMap) as CommentThread[]);
+    return observeComments(commentsMap, (next) => setCollabComments(next as CommentThread[]));
+  }, [commentsMap]);
+  const handleCommentsChange = useCallback(
+    (next: CommentThread[]) => writeCommentsToMap(commentsMap, next as never),
+    [commentsMap]
+  );
   const [seed, setSeed] = useState<SeedState>({ kind: 'loading' });
+  // Guards the one-shot below against React re-runs. Not state: flipping
+  // it must not re-render, and it must be read synchronously.
+  const seedAppliedRef = useRef(false);
   // Bumped via "Try again" to re-trigger the fetch effect.
   const [attempt, setAttempt] = useState(0);
   // Live filename — initialised from the server-seeded value, then
@@ -1704,9 +1751,10 @@ function CollabApp({
         // the room id until then.
         return { buffer, fileName: fromHeader ?? `${room}.docx` };
       })
-      .then(({ buffer, fileName }) => {
+      .then(async ({ buffer, fileName }) => {
+        const doc = await parseDocx(buffer);
         if (cancelled) return;
-        setSeed({ kind: 'ready', buffer, fileName });
+        setSeed({ kind: 'ready', buffer, fileName, doc });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -1718,6 +1766,130 @@ function CollabApp({
       cancelled = true;
     };
   }, [collabHttp, room, attempt]);
+
+  // ── Put the imported document into the shared state, exactly once ──
+  //
+  // Without this the room stays empty and every joiner sees a blank
+  // page, which is the whole reason this room flow was unusable.
+  //
+  // Why it is needed at all: each joiner downloads the same seed .docx
+  // and the editor parses it locally, but that parse only ever reaches
+  // the LOCAL ProseMirror document. The moment the parse lands, the
+  // editor rebuilds its EditorState (HiddenProseMirror re-runs
+  // `createInitialState` and calls `updateState`), prosemirror-view
+  // re-initialises every plugin view, and `ySyncPlugin`'s init does
+  // `_forceRerender()` — which overwrites the editor with whatever the
+  // Y fragment holds. For the first person into a fresh room that is
+  // nothing, so the freshly-parsed document is discarded and an empty
+  // paragraph is what gets published to everyone else.
+  //
+  // The document model itself survives all of that: it lives in the
+  // editor's own history, not in ProseMirror. So once things settle we
+  // convert it and dispatch it as an ordinary transaction — the same
+  // shape `handleRestoreSnapshot` uses for version restore — and
+  // ySyncPlugin picks it up and broadcasts it like any other edit.
+  //
+  // Exactly one client may do this. Every joiner reaches this code with
+  // the same .docx, so the server arbitrates: `claim-init` returns
+  // `won: true` to one caller and `false` to the rest. Seeding blind
+  // would put the document into the room once per participant.
+  useEffect(() => {
+    if (seed.kind !== 'ready' || status !== 'connected' || seedAppliedRef.current) return;
+
+    // Captured up front so the narrowing survives into the async body.
+    const parsedSeed = seed.doc;
+    let cancelled = false;
+
+    /** Text actually present in the room, ignoring empty structure. */
+    const roomText = () =>
+      ydoc
+        .getXmlFragment('prosemirror')
+        .toString()
+        .replace(/<[^>]*>/g, '')
+        .trim();
+
+
+    // Poll rather than wait a fixed delay. The provider's first sync has
+    // to have landed before an empty room can be told apart from a
+    // populated one that is merely slow, and the editor's view has to
+    // exist before anything can be dispatched into it. Both finish on
+    // their own schedule, and a fixed timeout either races the large
+    // documents or punishes the small ones.
+    const DEADLINE_MS = 60_000;
+    const STEP_MS = 400;
+    const startedAt = Date.now();
+
+    const attempt = async (): Promise<boolean> => {
+      if (cancelled || seedAppliedRef.current) return true;
+
+      // Someone else has already put a document in here. ySyncPlugin is
+      // rendering it; leave it alone.
+      //
+      // Note this is a question about text, not node count: an unseeded
+      // room already reports `length === 1`, because ySyncPlugin
+      // publishes the editor's empty starting paragraph the moment it
+      // binds. Testing `length > 0` reads every fresh room as occupied,
+      // which is precisely the failure this effect exists to fix.
+      if (roomText().length > 0) {
+        seedAppliedRef.current = true;
+        return true;
+      }
+
+      const view = editorRef.current?.getEditorRef()?.getView();
+      if (!view) return false;
+
+      // The document parsed by the fetch effect -- the same object the
+      // editor is using as its base, so the image nodes this produces
+      // reference the media already registered there rather than a
+      // second copy of it.
+      if (parsedSeed.package.document.content.length === 0) return true;
+
+      let won = false;
+      try {
+        const res = await fetch(
+          `${collabHttp}/api/rooms/${encodeURIComponent(room)}/claim-init`,
+          { method: 'POST' }
+        );
+        won = res.ok && ((await res.json()) as { won?: boolean }).won === true;
+      } catch {
+        // Can't reach the arbiter. Standing down is the safe failure:
+        // an empty room is recoverable, a doubled document is not.
+        return true;
+      }
+      if (cancelled) return true;
+      if (!won) {
+        seedAppliedRef.current = true;
+        return true;
+      }
+
+      // Round-trip through the live schema rather than trusting the node
+      // as built — `toProseDoc` uses the default schema, while the view's
+      // may carry extension nodes.
+      const pmDoc = toProseDoc(parsedSeed, { styles: parsedSeed.package.styles });
+      const node = view.state.schema.nodeFromJSON(pmDoc.toJSON());
+      view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, node.content));
+      seedAppliedRef.current = true;
+      return true;
+    };
+
+    const tick = async () => {
+      if (cancelled) return;
+      const done = await attempt();
+      if (done || cancelled) return;
+      if (Date.now() - startedAt > DEADLINE_MS) {
+        onError(new Error('Timed out preparing the shared document for this room.'));
+        return;
+      }
+      timer = setTimeout(() => void tick(), STEP_MS);
+    };
+
+    let timer = setTimeout(() => void tick(), STEP_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [seed.kind, status, ydoc, collabHttp, room, editorRef, onError]);
 
   const renderTitleBarRight = useCallback(
     () => (
@@ -1746,7 +1918,15 @@ function CollabApp({
       <main style={styles.main}>
         <DocxEditor
           ref={editorRef}
-          documentBuffer={seed.buffer}
+          // `document` + `externalContent`, not `documentBuffer`: the
+          // parsed document supplies styles, media, headers and section
+          // properties for export, while ySyncPlugin owns the body
+          // content. Passing the raw buffer instead makes the editor
+          // parse it again -- a second media registry whose images the
+          // serializer emits alongside the first, doubling every
+          // exported file that contains a picture.
+          document={seed.doc}
+          externalContent
           externalPlugins={plugins}
           author={author}
           onError={onError}
@@ -1759,6 +1939,8 @@ function CollabApp({
           commentIdBase={commentIdBase}
           documentName={collabFileName ?? seed.fileName}
           onDocumentNameChange={handleRename}
+          comments={collabComments as never}
+          onCommentsChange={handleCommentsChange as never}
           renderTitleBarRight={renderTitleBarRight}
         />
       </main>
