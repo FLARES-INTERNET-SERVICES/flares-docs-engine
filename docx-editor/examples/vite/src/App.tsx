@@ -1701,10 +1701,10 @@ function CollabApp({
   // editor, which is the only place that can actually make the surface
   // read-only. Defaults to editing, so nothing changes for hosts that do not
   // pass it.
-  const documentMode = useMemo(() => {
+  const [documentMode, setDocumentMode] = useState<'viewing' | 'suggesting' | 'editing'>(() => {
     const m = new URLSearchParams(window.location.search).get('mode');
     return m === 'viewing' || m === 'suggesting' ? m : 'editing';
-  }, []);
+  });
 
   // Emit connection state and the peer list to the host, so it can render the
   // collaborator avatars beside its own Share control and a single connection
@@ -1729,6 +1729,22 @@ function CollabApp({
       // the editor keeps working, it just cannot mirror presence outward.
     }
   }, [hostOwnsPresence, hostOrigin, status, peers]);
+
+  // Let the host flip the surface read-only (or back) at runtime, without a
+  // reload. A generic embedding hook: any host can post
+  // `{ type: 'casualoffice:setEditable', editable }` — Flares uses it when a
+  // document is handed in to a teacher (locked) or returned (unlocked) while
+  // the editor is open. Only the declared host origin is honoured.
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      if (hostOrigin && event.origin !== hostOrigin) return;
+      const data = event.data as { type?: string; editable?: boolean } | null;
+      if (!data || data.type !== 'casualoffice:setEditable') return;
+      setDocumentMode(data.editable === false ? 'viewing' : 'editing');
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [hostOrigin]);
 
   // Comment threads ride a shared Y.Map of their own: the highlight marks
   // live in the ProseMirror document and so travel via ySyncPlugin, but

@@ -237,6 +237,13 @@ const HiddenProseMirrorComponent = forwardRef<HiddenProseMirrorRef, HiddenProseM
     // Refs
     const hostRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
+    // Read by the EditorView's editable() callback, which the view calls on
+    // every check. A plain closure over `readOnly` would freeze at the value
+    // it had when the view was built, so a host toggling read-only at runtime
+    // (a document handed in while open) would be ignored. The ref, plus the
+    // setProps below, makes that toggle take effect without a reload.
+    const readOnlyRef = useRef(readOnly);
+    readOnlyRef.current = readOnly;
     const documentRef = useRef<Document | null>(document);
     const isDestroyingRef = useRef(false);
     // Track the document identity to detect truly external changes
@@ -288,7 +295,7 @@ const HiddenProseMirrorComponent = forwardRef<HiddenProseMirrorRef, HiddenProseM
 
       const editorProps: DirectEditorProps = {
         state: initialState,
-        editable: () => !readOnly,
+        editable: () => !readOnlyRef.current,
         // Keeps `overflow-anchor` on the PM root across outer-deco sync (prosemirror#933).
         attributes: {
           style: 'overflow-anchor: none',
@@ -427,10 +434,15 @@ const HiddenProseMirrorComponent = forwardRef<HiddenProseMirrorRef, HiddenProseM
     }, [document, styles, extensionManager, externalPlugins]);
     // NOTE: onSelectionChange removed from dependencies - accessed via ref to prevent infinite loops
 
-    // Update editable state
+    // Update editable state.
+    //
+    // The view only re-reads editable() when something tells it to; a bare
+    // state change does not. setProps with a fresh editable closure forces that
+    // re-read, so toggling read-only at runtime updates the contenteditable
+    // surface immediately — which is what makes a document handed in while open
+    // go read-only without a reload.
     useEffect(() => {
-      if (!viewRef.current) return;
-      // EditorView will call editable() on each check, so we don't need to update
+      viewRef.current?.setProps({ editable: () => !readOnlyRef.current });
     }, [readOnly]);
 
     // ========================================================================
