@@ -11,7 +11,7 @@ revision inside app image `casualoffice/docs@sha256:0f9892411476f45a…`
 
 **Tagged:** `0.0.5-flares.1`.
 
-**Totals:** 18 patches.
+**Totals:** 20 patches.
 
 | | Files | +/− |
 | --- | --- | --- |
@@ -48,6 +48,8 @@ ProseMirror schema and the layout engine are untouched.
 | **P016** | "Minimal chrome" hid the collaborators | editor package | 2 | +14 / −2 | yes |
 | **P017** | Host-owned presence (emit peers to the host) | editor package | 1 | +40 / −3 | yes |
 | **P018** | Open a document read-only from the URL | editor package | 1 | +12 / −1 | yes |
+| **P019** | Toggle read-only from the host at runtime | editor package | 1 | +24 / −4 | yes |
+| **P020** | Runtime read-only did not take effect | editor core | 1 | +14 / −4 | yes, strongly |
 
 ---
 
@@ -485,6 +487,47 @@ host can open the surface read-only. The server still enforces it; this is the
 visible half, so a viewer sees a read-only document rather than a trap.
 
 **If dropped:** viewers type into a document that throws their edits away.
+
+---
+
+## P019 — Toggle a document read-only from the host, at runtime
+
+**Where:** `examples/vite/src/App.tsx`
+
+**The problem.** P018 let a host open a document read-only from the URL, but
+not change its mind once it was open. A host whose permission model can change
+under a live editor — a document handed in to a teacher while the student has
+it open — had no way to make the surface read-only without a reload.
+
+**What it does.** `documentMode` becomes controlled React state, initialised
+from the URL, and a generic `casualoffice:setEditable` message (honoured only
+from the declared `hostOrigin`) flips it at runtime. Any host can use it; the
+message names nothing host-specific.
+
+**If dropped:** a host can set read-only only at load, so a permission that
+changes mid-session is not reflected until the page is reloaded.
+
+---
+
+## P020 — Runtime read-only did not take effect
+
+**Where:** `packages/react/src/paged-editor/HiddenProseMirror.tsx`
+
+**The problem.** The editing surface was built with `editable: () => !readOnly`
+— a closure that captured `readOnly` as it was when the EditorView was created.
+The effect meant to react to later changes was an explicit no-op, with a
+comment claiming the view re-reads editable() on every check. It does re-call
+it, but the closure was frozen, and nothing told the view to re-read. So
+turning read-only on (or off) after mount changed a React value and nothing
+else: the contenteditable surface stayed as it was.
+
+**What it does.** A ref holds the current value, the callback reads the ref,
+and the `[readOnly]` effect calls `setProps` to make the view re-apply
+editability. Read-only now takes effect the instant it changes.
+
+**If dropped:** any host toggling read-only at runtime (P019) is ignored — the
+document keeps accepting edits after being made read-only. A generic bug; the
+fix is not Flares-specific.
 
 ---
 
