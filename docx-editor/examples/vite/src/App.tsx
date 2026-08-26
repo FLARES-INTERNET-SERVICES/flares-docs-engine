@@ -1680,6 +1680,56 @@ function CollabApp({
     []
   );
 
+  // A host may take over presence entirely: draw the collaborator avatars and
+  // the connection state in its own chrome, and ask the editor to stop drawing
+  // its copies. This is a generic embedding hook, not a Flares one — any host
+  // can pass `hostPresence=1` and listen for the neutral `casualoffice:collab`
+  // message below. `hostOrigin` is the host's origin, so the message is
+  // targeted rather than broadcast to `*`.
+  const hostOwnsPresence = useMemo(
+    () => new URLSearchParams(window.location.search).get('hostPresence') === '1',
+    []
+  );
+  const hostOrigin = useMemo(
+    () => new URLSearchParams(window.location.search).get('hostOrigin') || '',
+    []
+  );
+
+  // The host can open a document read-only by asking for `mode=viewing`
+  // (SuperDoc's vocabulary; `suggesting` is also honoured). A generic embedding
+  // hook: the host decides who may write from its own permissions and tells the
+  // editor, which is the only place that can actually make the surface
+  // read-only. Defaults to editing, so nothing changes for hosts that do not
+  // pass it.
+  const documentMode = useMemo(() => {
+    const m = new URLSearchParams(window.location.search).get('mode');
+    return m === 'viewing' || m === 'suggesting' ? m : 'editing';
+  }, []);
+
+  // Emit connection state and the peer list to the host, so it can render the
+  // collaborator avatars beside its own Share control and a single connection
+  // indicator. Only display names and colours cross — the same things every
+  // peer already sees on each other's cursors — and only to the declared host
+  // origin. Nothing is emitted unless the host asked (`hostPresence=1`).
+  useEffect(() => {
+    if (!hostOwnsPresence || window.parent === window) {
+      return;
+    }
+    try {
+      window.parent.postMessage(
+        {
+          type: 'casualoffice:collab',
+          status,
+          peers: peers.map((p) => ({ name: p.name, color: p.color, isLocal: p.isLocal })),
+        },
+        hostOrigin || '*'
+      );
+    } catch {
+      // A cross-origin parent that refuses the message is the host's choice;
+      // the editor keeps working, it just cannot mirror presence outward.
+    }
+  }, [hostOwnsPresence, hostOrigin, status, peers]);
+
   // Comment threads ride a shared Y.Map of their own: the highlight marks
   // live in the ProseMirror document and so travel via ySyncPlugin, but
   // the thread content -- author, text, replies, resolved state -- is
@@ -1921,7 +1971,7 @@ function CollabApp({
 
   return (
     <div style={styles.container}>
-      <DisconnectedBanner status={status} />
+      {!hostOwnsPresence && <DisconnectedBanner status={status} />}
       <main style={styles.main}>
         <DocxEditor
           ref={editorRef}
@@ -1962,10 +2012,11 @@ function CollabApp({
           onDocumentNameChange={handleRename}
           comments={collabComments as never}
           onCommentsChange={handleCommentsChange as never}
-          renderTitleBarRight={renderTitleBarRight}
+          renderTitleBarRight={hostOwnsPresence ? undefined : renderTitleBarRight}
+          documentMode={documentMode}
         />
       </main>
-      <StatusBadge status={status} peers={peers} />
+      {!hostOwnsPresence && <StatusBadge status={status} peers={peers} />}
     </div>
   );
 }
