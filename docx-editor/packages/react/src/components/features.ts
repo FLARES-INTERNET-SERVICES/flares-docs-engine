@@ -35,6 +35,12 @@ export const DOCX_FEATURE_IDS = [
   // save indicators disagreeing on one screen is worse than either alone.
   'titleBar',
   'panelRail',
+  // The editor's own version history. Local to one browser and keyed by the
+  // document's name, so it is not the same thing as a host application's
+  // server-side history -- and showing both puts two lists of "versions" on
+  // one screen that do not agree, only one of which survives the student
+  // opening the document on a different computer.
+  'versionHistory',
   'statusBar',
   'zoomControl',
   'printButton',

@@ -2106,6 +2106,20 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   // Default on, so nothing changes for a host that does not ask.
   const showTitleBarEffective = isFeatureEnabled(features, 'titleBar', true);
   const showPanelRailEffective = isFeatureEnabled(features, 'panelRail', showPanelRail);
+  // The editor's own version history is per browser and keyed by the
+  // document's NAME — rename the document and its history is orphaned; two
+  // different documents that happen to share a name share a history. That is
+  // survivable for a standalone editor, where it is the only history there is.
+  // It is not survivable beside a host that keeps real versions server-side:
+  // a student would see two lists called "version history" that disagree, and
+  // the editor's would be empty on any computer but the one they last used.
+  // So a host that owns durability owns the history too, and by default the
+  // editor's stays as it was.
+  const showVersionHistoryEffective = isFeatureEnabled(
+    features,
+    'versionHistory',
+    !recovery?.hostOwnsDurability
+  );
   const showStatusBarEffective = isFeatureEnabled(features, 'statusBar', showStatusBar);
   const showZoomControlEffective = isFeatureEnabled(features, 'zoomControl', showZoomControl);
   const showPrintButtonEffective = isFeatureEnabled(features, 'printButton', showPrintButton);
@@ -2685,7 +2699,11 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   // entries via the panel's "Save version…" button; auto entries every
   // 10 min while dirty.
   const versionCapture = useVersionHistoryCapture({
-    docId: documentName?.trim() || 'Untitled',
+    // Keyed by the document's identity when the host gives one. Keying by name
+    // meant renaming a document orphaned its history, and two documents that
+    // happened to share a name shared one — the same mistake the local
+    // autosave record used to make, in a second place.
+    docId: recovery?.documentId || documentName?.trim() || 'Untitled',
     view: bodyView,
     author,
   });
@@ -3696,7 +3714,19 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   // beforeunload guard — browsers show the native confirm dialog when
   // `event.returnValue` is set to a non-empty string (the actual string is
   // ignored in modern browsers; only the presence matters).
+  //
+  // Skipped when the host owns durability, for the same reason the local
+  // autosave copy is not written then (see P010). `isDirty` means the local
+  // buffer differs from the last local serialisation; in a collaborative room
+  // that says nothing about whether the work is safe, and it is usually true
+  // seconds after every keystroke. So a student closing a tab on a document
+  // that reached Drive minutes ago was met with "Changes you made may not be
+  // saved" — a modal, contradicting the "Saved to Drive" on the same screen,
+  // and the more alarming of the two because the browser said it.
+  const hostOwnsDurability = recovery?.hostOwnsDurability ?? false;
   useEffect(() => {
+    if (hostOwnsDurability) return;
+
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (!isDirtyRef.current) return;
       e.preventDefault();
@@ -3704,7 +3734,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, []);
+  }, [hostOwnsDurability]);
 
   // Handle document change
   const handleDocumentChange = useCallback(
@@ -10876,8 +10906,10 @@ body { background: white; }
                         onToggleProperties={() =>
                           openRightPanel(showProperties ? 'none' : 'properties')
                         }
-                        onToggleHistory={() =>
-                          openRightPanel(showVersionHistory ? 'none' : 'history')
+                        onToggleHistory={
+                          showVersionHistoryEffective
+                            ? () => openRightPanel(showVersionHistory ? 'none' : 'history')
+                            : undefined
                         }
                         // Writer + chat rail toggles unwired — LLM
                         // gating. Restore: writerVisible={showWritingAssistant}
