@@ -159,6 +159,25 @@ jobs:
       - name: Room initialisation requires a capability
         run: node tests/regressions/seed-security.mjs
 
+      # A document that saved perfectly offered to restore an older copy of
+      # itself on every reload, and the record was keyed per ORIGIN, so one
+      # document's draft was offered against another.
+      - name: A saved document does not ask to be rescued
+        run: node tests/regressions/recovery.mjs
+
+      # Three separate imports pulled fonts from Google on every load, telling
+      # a third party who was reading which document. A grep would not have
+      # caught the transitive @import chain, so this drives a real browser and
+      # fails on any request that leaves the origin.
+      - name: Nothing is fetched from a third party
+        run: node tests/regressions/no-external-requests.mjs
+
+      # The policy the server actually sends, applied to the editor, with zero
+      # violations required. A violation here is a finding about the editor,
+      # not a reason to widen the policy.
+      - name: The editor works under its own Content-Security-Policy
+        run: node tests/regressions/csp.mjs
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
