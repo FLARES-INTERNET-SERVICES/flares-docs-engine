@@ -29,6 +29,11 @@ import type { Command, Plugin } from 'prosemirror-state';
 export const DOCX_FEATURE_IDS = [
   // ── Coarse chrome regions (deprecated show* booleans map to these) ──
   'toolbar',
+  // The strip carrying the document name and the save/presence indicators.
+  // Separable from the toolbar because a host that embeds the editor usually
+  // has its own title bar and its own idea of what "saved" means -- and two
+  // save indicators disagreeing on one screen is worse than either alone.
+  'titleBar',
   'panelRail',
   'statusBar',
   'zoomControl',

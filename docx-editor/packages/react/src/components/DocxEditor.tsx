@@ -2063,6 +2063,8 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     disabledFeaturesRef.current = disabledFeatures;
   }, [disabledFeatures]);
   const showToolbarEffective = isFeatureEnabled(features, 'toolbar', showToolbar);
+  // Default on, so nothing changes for a host that does not ask.
+  const showTitleBarEffective = isFeatureEnabled(features, 'titleBar', true);
   const showPanelRailEffective = isFeatureEnabled(features, 'panelRail', showPanelRail);
   const showStatusBarEffective = isFeatureEnabled(features, 'statusBar', showStatusBar);
   const showZoomControlEffective = isFeatureEnabled(features, 'zoomControl', showZoomControl);
@@ -9849,19 +9851,23 @@ body { background: white; }
                         onTableAction={handleTableAction}
                       >
                         <EditorToolbar.TitleBar>
-                          {renderLogo && <EditorToolbar.Logo>{renderLogo()}</EditorToolbar.Logo>}
-                          {documentName !== undefined && (
+                          {showTitleBarEffective && renderLogo && (
+                            <EditorToolbar.Logo>{renderLogo()}</EditorToolbar.Logo>
+                          )}
+                          {showTitleBarEffective && documentName !== undefined && (
                             <EditorToolbar.DocumentName
                               value={documentName}
                               onChange={onDocumentNameChange}
                               editable={documentNameEditable}
                             />
                           )}
-                          {renderTitleBarRight && (
+                          {showTitleBarEffective && renderTitleBarRight && (
                             <EditorToolbar.TitleBarRight>
                               {renderTitleBarRight()}
                             </EditorToolbar.TitleBarRight>
                           )}
+                          {/* The menu bar stays regardless: a host supplying
+                              its own title bar still needs File and Insert. */}
                           <EditorToolbar.MenuBar />
                         </EditorToolbar.TitleBar>
                         <EditorToolbar.FormattingBar>{toolbarChildren}</EditorToolbar.FormattingBar>

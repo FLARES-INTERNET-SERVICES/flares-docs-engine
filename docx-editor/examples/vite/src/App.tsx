@@ -1673,6 +1673,13 @@ function CollabApp({
 }: CollabAppProps) {
   const { plugins, status, peers, metaMap, ydoc, commentsMap } = useCollab({ room, backend, user });
 
+  // Read once: the host cannot change its mind mid-session, and re-reading
+  // location on every render would be work for no reason.
+  const hostProvidesChrome = useMemo(
+    () => new URLSearchParams(window.location.search).get('chrome') === 'minimal',
+    []
+  );
+
   // Comment threads ride a shared Y.Map of their own: the highlight marks
   // live in the ProseMirror document and so travel via ySyncPlugin, but
   // the thread content -- author, text, replies, resolved state -- is
@@ -1918,6 +1925,13 @@ function CollabApp({
       <main style={styles.main}>
         <DocxEditor
           ref={editorRef}
+          // A host that embeds the editor usually has its own title bar and
+          // its own idea of what "saved" means -- one that knows whether the
+          // document reached storage, which the editor's local dirty flag does
+          // not. Showing both puts two save indicators on one screen
+          // disagreeing with each other. `?chrome=minimal` lets the host say
+          // it is providing that itself; the menus stay either way.
+          features={hostProvidesChrome ? { titleBar: false } : undefined}
           // `document` + `externalContent`, not `documentBuffer`: the
           // parsed document supplies styles, media, headers and section
           // properties for export, while ySyncPlugin owns the body

@@ -25,6 +25,8 @@ the ProseMirror schema and the layout engine are untouched.
 | **P005** | Durable room metadata | collab server | 3 | +120 / −2 | yes |
 | **P006** | Image duplication on export | **editor core** | 1 | +15 / −0 | yes, strongly |
 | **P007** | Comment threads never shared | client + package | 2 | +30 / −0 | yes |
+| **P008** | Documents named by their room id | collab server | 2 | +40 / −2 | yes, strongly |
+| **P009** | Embedded editor draws a second title bar | editor package + app | 3 | +28 / −6 | yes |
 
 ---
 
@@ -215,6 +217,62 @@ real OOXML — `word/comments.xml` plus `commentsExtended`, `commentsIds` and
 `commentsExtensible`. Microsoft Word reads the comment back.
 
 **Tests:** `comments.mjs` — 9 checks.
+
+---
+
+## P008 — Documents named by their room id
+
+**Files:** `collab/src/rooms.ts`, `collab/src/index.ts`
+
+**Why.** A user's document appeared in the editor titled `qd1ermqed8h7`. The
+client asks for the document's name via `Content-Disposition` on the seed
+response and falls back to `${room}.docx` when it is absent — and the server
+never sent one, so every document was named after an internal identifier.
+
+Two things were wrong, and fixing only the first looks like it works:
+
+1. The server did not record the filename the seed was uploaded under, and did
+   not send `Content-Disposition` when serving it back.
+2. `Content-Disposition` is **not a CORS-safelisted response header**. Sending
+   it is not enough — a cross-origin client cannot read it without
+   `Access-Control-Expose-Headers`. An editor embedded on its own origin (the
+   normal deployment) therefore still saw nothing.
+
+**What it does.** Records `seedFileName` on the room, carries it through the
+durable metadata so it survives a restart, returns it as `Content-Disposition`
+(RFC 5987 form, so non-ASCII names survive), and exposes the header to
+cross-origin readers.
+
+**If dropped:** every document is named after a room id.
+
+**Upstream note.** A strong candidate: the client-side parsing already exists
+and has simply never had anything to parse.
+
+---
+
+## P009 — Embedded editor draws a second title bar
+
+**Files:** `packages/react/src/components/features.ts`,
+`packages/react/src/components/DocxEditor.tsx`,
+`examples/vite/src/App.tsx`
+
+**Why.** A host that embeds the editor generally has its own title bar and its
+own save indicator — one that knows whether the document actually reached
+storage, which the editor's local dirty flag does not. Both were drawn, one
+above the other, saying opposite things: the host reporting the document saved
+while the editor reported unsaved changes, on the same screen, about the same
+document.
+
+There was no way to turn the editor's off. `chrome: 'none'` exists but takes
+the toolbar with it, and the toolbar is the reason to embed an editor.
+
+**What it does.** Adds a `titleBar` feature id alongside the existing chrome
+regions, defaulting to on. When a host disables it, the document name, the
+save indicator and the presence slot are hidden — and the **menu bar stays**,
+because a host supplying its own title bar still needs File and Insert. The
+example app reads `?chrome=minimal` to request it.
+
+**If dropped:** two contradictory save indicators on one screen.
 
 ---
 
