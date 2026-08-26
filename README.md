@@ -1,272 +1,228 @@
-<div align="center">
+# Flares Docs Engine
 
-<a href="https://docs.casualoffice.org/">
-  <img src="https://raw.githubusercontent.com/CasualOffice/docs/main/assets/logo.svg" alt="Casual Docs" width="96" height="96" />
-</a>
+A collaborative `.docx` editor: real Word files, edited by several people at
+once, saved back as real Word files.
 
-# Casual Docs
+**Flares Inc. did not write this engine.** It is a fork of
+[CasualOffice/docs](https://github.com/CasualOffice/docs), which is itself a
+fork of [eigenpal/docx-editor](https://github.com/eigenpal/docx-editor). What
+Flares added is a small set of collaboration, security and correctness fixes,
+listed in [PATCHES.md](PATCHES.md) and mostly intended to go back upstream. See
+[NOTICE](NOTICE) for the full lineage and [LICENSE](LICENSE) for terms.
 
-**Open-source, self-hosted web `.docx` editor with real-time co-editing — a Google Docs / Word Online / OnlyOffice alternative you run on your own server.**
-
-[![CI](https://github.com/CasualOffice/docs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/CasualOffice/docs/actions/workflows/ci.yml)
-[![Deploy](https://github.com/CasualOffice/docs/actions/workflows/deploy-demo.yml/badge.svg?branch=main)](https://github.com/CasualOffice/docs/actions/workflows/deploy-demo.yml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/casualoffice/docs?logo=docker)](https://hub.docker.com/r/casualoffice/docs)
-[![Image Size](https://img.shields.io/docker/image-size/casualoffice/docs/latest?logo=docker&label=image)](https://hub.docker.com/r/casualoffice/docs)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
-
-[**Live Demo →**](https://docs.casualoffice.org/) &nbsp;·&nbsp; [Docker Hub →](https://hub.docker.com/r/casualoffice/docs) &nbsp;·&nbsp; [Architecture →](./docs/ARCHITECTURE.md)
-
-<sub>The hosted demo is **single-user** (try the editor). **Real-time co-editing** runs in the [Docker image](#-self-host-with-docker) — one container, share a link, edit together.</sub>
-
-<br />
-
-<img src="https://raw.githubusercontent.com/CasualOffice/docs/main/assets/screenshot.png" alt="Casual Docs editing a resume — ribbon toolbar, ruler, paginated WYSIWYG page" width="860" />
-
-</div>
+Flares maintains this fork because Flares Docs is built on it. It is published
+because the fixes are generic, and because a dependency you cannot read is a
+dependency you cannot trust.
 
 ---
 
-Casual Docs is a **self-hostable, browser-based `.docx` editor** that looks and behaves like Microsoft Word — ribbon-style toolbar, paginated WYSIWYG layout, file-centric workflow — with **real-time multi-user co-editing** built in. Upload a `.docx`, share a link, edit together instantly. **No accounts, no Microsoft / Google login, no lock-in.** One Docker container running the **Node collab server** (Hocuspocus + Yjs), in-memory rooms.
+## What it is
 
-Sister projects: [Casual Sheets](https://github.com/CasualOffice/sheets) (`.xlsx`) and [Casual Slides](https://github.com/CasualOffice/slides) (`.pptx`).
+- **Real OOXML.** Documents are parsed into a Word-shaped model — tables,
+  merged cells, images, headers, footers, sections — and written back to it.
+  Files exported from here open in Microsoft Word without a repair prompt.
+- **Real collaboration.** Yjs CRDT over Hocuspocus. Several people edit at
+  once, offline edits merge on reconnect, and the document converges.
+- **No backend requirement for the editor.** The editing surface is
+  client-side. The collaboration server is a separate, small Node service.
+
+## What it is not
+
+- Not a Flares product. It knows about documents, rooms, users and
+  permissions. It does not know what a school, a student or an assignment is,
+  and nothing in it should.
+- Not a Google Docs replacement. Comments and suggesting mode exist; tracked
+  changes under concurrent editing is not proven.
 
 ---
 
-## ✨ What's Inside
+## Running it
 
-<details open>
-<summary><b>Core editing</b> — a full Word-style writing surface</summary>
+Requires [Bun](https://bun.sh) and Docker.
 
-- Paragraphs, runs, **tables** (borders, shading, merged cells, header rows, table styles), **lists** (multi-level bullet/numbered), hyperlinks, footnotes/endnotes
-- Full character formatting — bold/italic/underline (styled + colored), strike, super/subscript, small/all caps, character spacing, RTL/LTR; paragraph + character **styles** with inheritance
-- **Find & Replace** (match-case / whole-word / regex), **command palette** (Ctrl+Shift+P), canonical Word **keyboard shortcuts**
-- **Writing aids** — spell check (Hunspell), autocorrect + smart quotes, translate-selection, dictionary/explore lookup, citations, voice typing, document outline, live word/character/reading-time counts
-- **Autosave + restore** (IndexedDB), recent files, **Print / Export-as-PDF** with page setup
-</details>
+```bash
+git clone https://github.com/flaresinc/flares-docs-engine.git
+cd flares-docs-engine
+./setup.sh --in-place        # submodules, dependencies, .env.local
+```
 
-<details>
-<summary><b>Word compatibility</b> — OOXML fidelity, not a lossy import</summary>
+Two processes — the collaboration server and the editor:
 
-- **Paginated WYSIWYG** — true page breaks, headers/footers, page numbers, multi-column sections
-- Full **WordprocessingML** core + **DrawingML** rendering: pictures, shapes, textboxes (modern + VML), `wpg:wgp` groups with per-child positioning/rotation, behind-text anchoring, math equations
-- **Comments & tracked changes**, theme colors/fonts, the style inheritance chain
-- Tag-level **round-trip audit** ([`roundtrip-audit.mjs`](docx-editor/scripts/roundtrip-audit.mjs)) parses → re-serializes → diffs `document.xml`; each fidelity fix is pinned by a unit test and (where visible) an e2e/visual-fidelity spec against a LibreOffice reference
-</details>
+```bash
+docker compose up -d redis app          # collaboration + Redis
+cd docx-editor && bun run dev           # editor on :5173
+```
 
-<details>
-<summary><b>Collaboration</b> — real-time, in the Docker image</summary>
+For anything performance-related, measure the production build rather than the
+dev server. Vite serves roughly a thousand unbundled modules in development;
+cold load there is several times slower than the real thing and is not a
+product number.
 
-- **Share dialog** — File → Share: get an edit URL and a view-only URL
-- **Presence avatars** + **live cursors** (each peer's selection in their color, name-labeled)
-- **Full mutation sync** — text, formatting, lists, tables, images, comments, headers/footers propagate cross-peer; **view-only enforced** at the Y.Doc layer
-- **Lightweight password-protected rooms** for link sharing (constant-time compare on the WS upgrade). This is sharing-grade protection, not an identity system — for production auth, integrate through the **WOPI / JWT-API** host interface
-- **Stateless backend** — no DB, no on-disk log; rooms live in memory, persistence delegated to the host (inline, WOPI, or JWT-API)
-</details>
+```bash
+cd docx-editor && bun run build:demo
+```
 
-<details>
-<summary><b>File formats</b> — open & save round-trip</summary>
+### Why `setup.sh` exists
 
-| Format | Open | Save / Export | Path |
-| --- | :---: | :---: | --- |
-| `.docx` | ✅ | ✅ | native parser + serializer |
-| `.odt` | ✅ | ✅ | [`@casualoffice/core`](https://www.npmjs.com/package/@casualoffice/core) WASM worker (lazy) |
-| `.md` | ✅ | ✅ | `@casualoffice/core` WASM worker (lazy) |
-| `.txt` | ✅ | ✅ | `@casualoffice/core` WASM worker (lazy) |
-| PDF | — | ✅ | browser print pipeline (Save as PDF) |
+The repository does not build from a plain `git clone`, and rather than leave
+that to be rediscovered the script handles it:
 
-Non-DOCX formats convert to/from DOCX bytes in a Web Worker (Rust + WASM); the ~3.3 MB artifact is lazy-loaded so the initial bundle stays slim.
-</details>
+1. `docx-editor/vendor/design-system` is declared as a submodule with an **SSH**
+   URL, so anyone without a key on that account gets an empty directory and a
+   build that fails on an unresolved import. The repository is public over
+   HTTPS; the script rewrites the URL for that one command.
+2. **`katex`** is imported by the editor but not installed by the workspace
+   resolve, so Vite's dependency scan fails without it.
 
-<details>
-<summary><b>Developer & self-hosting</b> — embeddable, extensible, one container</summary>
+---
 
-- **`<DocxEditor>`** React component ([`@casualoffice/docs`](https://www.npmjs.com/package/@casualoffice/docs)) + an extension system for custom nodes/marks/menus
-- **i18n** — translatable toolbar/dialog strings with a CI-enforced, auto-derived `LocaleStrings` type
-- **Single multi-arch Docker image** (`linux/amd64` + `linux/arm64`): editor SPA + Node collab server (Hocuspocus + Yjs) in one container behind one port
-- Material-Symbols icons bundled as SVGs (no font fetch)
-</details>
+## Architecture
 
-See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for the full design.
+```
+      Browser
+         │
+   ProseMirror  ◄──►  canonical OOXML document model
+         │
+   y-prosemirror
+         │
+       Y.Doc  ◄──►  HocuspocusProvider  ──── websocket ────┐
+                                                            │
+                                              Collaboration server
+                                                (Node, Fastify)
+                                                            │
+                                              ┌─────────────┴──────────┐
+                                              │                        │
+                                            Redis                  Host storage
+                                         (hot state)            (durable, yours)
+```
 
-## AI Features (pre-release)
+The document model is the source of truth and ProseMirror is a projection of
+it — which is why round-trips preserve things the editing schema does not
+model, like section properties and header parts.
 
-<details>
-<summary><b>Inline ask, rewrite panel, DocOps chat</b> (pre-release — in active development)</summary>
+### Collaboration bootstrap
 
-These features are gated on model availability and are off by default until a model is confirmed reachable. Nothing in the AI layer is shown to the user until that check passes.
+The part most likely to surprise you, and the reason for the largest patch in
+this fork. An imported `.docx` has to *become* the room's shared state, once:
 
-**Inline ask pill**
+1. A room is created and the starting `.docx` is uploaded to it.
+2. Every joiner downloads that same file.
+3. **One** of them — chosen by `POST /api/rooms/:id/claim-init`, which returns
+   `won: true` to exactly one caller — converts it and dispatches it into the
+   live editor as an ordinary transaction. Yjs broadcasts it like any edit.
+4. Everyone else takes the shared state and leaves their local copy alone.
 
-Select text in the document and an ask pill appears above the selection. Type a prompt and press Enter to send. On desktop (Casual Desktop app), the pill is available when a local model is loaded. On the web, it requires an Anthropic API key configured in the collab server. The keyboard shortcut `Cmd+J` (Mac) / `Ctrl+J` (Windows/Linux) opens the pill from the keyboard when AI is available.
+Without the arbitration in step 3, every joiner publishes its own copy and the
+room ends up holding the document N times over.
 
-**AI Suggestion Panel**
+---
 
-A right-docked panel for rewrites and summaries. After submitting a prompt from the inline pill, the panel opens and streams the response token by token. Tone chips along the top of the panel let you adjust the output before or after generation: Polish, Concise, Formal, Casual, Shorter, Longer. Controls:
+## Integrating it
 
-- Accept — replaces the selected text with the suggestion
-- Reject — discards the suggestion, returns focus to the document
-- Stop — halts in-flight generation (replaces Retry while the model is running)
-- Retry — re-runs the last prompt after generation finishes
+The editor is deliberately ignorant of who you are. It needs four things from a
+host, and nothing else:
 
-Status labels reflect the active operation ("Rewriting...", "Summarizing...") rather than a generic spinner.
-
-**DocOps chat panel**
-
-A separate panel for document-level operations: restructure, insert boilerplate, apply section templates. Responses stream in real time via SSE. This panel is the primary surface for the DocOps IR mutation set (see roadmap below).
-
-**Model gating**
-
-| Context | Model path |
+| It needs | It does not need |
 | --- | --- |
-| Casual Desktop (macOS) | Local llama.cpp model via the ai-worker sidecar; Metal GPU acceleration; fully offline |
-| Web / Docker | Anthropic API key set on the collab server (`CASUAL_AI_API_KEY`); no local model required |
+| a document (`.docx` bytes) | where you keep it |
+| a room id | what the document is *for* |
+| a user's display name and colour | their email, role or account |
+| a permission: `edit` or `view` | why the answer was yes |
 
-If neither condition is met, all AI UI is hidden. There is no degraded or stubbed state.
-
-**Streaming**
-
-Both the DocOps panel and the AI Suggestion Panel receive responses as SSE streams. Tokens appear in the in-flight bubble as they arrive; the panel commits the full response once the stream closes.
-
-**What is coming next (DocOps Phase 1)**
-
-- Full mutation set: insert/delete/move/replace at paragraph and section granularity, applied as ProseMirror transactions so undo works normally
-- Accept/reject in-document: suggested changes rendered as tracked-change overlays, accepted or rejected inline without leaving the document
-- Casual Sheets AI: the same DocOps IR and model-gating infrastructure extended to the spreadsheet surface
-
-These are tracked in [`docs/internal/31-docops-architecture.md`](./docs/internal/31-docops-architecture.md).
-
-</details>
-
----
-
-## 🐳 Self-Host with Docker
-
-A single multi-arch image. The editor SPA and the Node collab server (Hocuspocus + Yjs) run in one container behind a single port.
-
-### Quick start
-
-```sh
-docker run --rm -p 8080:8080 casualoffice/docs:latest
-```
-
-Open `http://localhost:8080`. Upload a `.docx`, click Share, send the link.
-
-### Recommended: with `docker-compose`
-
-```yaml
-services:
-  app:
-    image: casualoffice/docs:latest
-    restart: unless-stopped
-    ports: ['8080:8080']
-    environment:
-      PORT: '8080'
-      CASUAL_FILE_EXT: '.docx'
-```
-
-### Try co-editing
-
-1. Open `http://localhost:8080`. Upload a `.docx`, then **File → Share for co-editing…** to set a password and get two URLs.
-2. Paste either URL into another browser or device — the joiner connects in under a second.
-3. Type — peers see characters appear in real time, with named cursors tracking selection.
-
-### API surface
-
-| Method | Path | Description |
-| --- | --- | --- |
-| `GET` | `/` | Serves the built editor SPA |
-| `POST` | `/api/rooms` | Mint a transient share-link room — returns `{roomId}` |
-| `POST` | `/api/rooms/:id/seed` | Seed a room with the starting `.docx` bytes |
-| `GET` | `/api/rooms/:id/seed` | Fetch the room's seed bytes (joiners) |
-| `GET` | `/health` | Liveness probe |
-| `WS` | `/yjs` | Hocuspocus sync; room name travels in the handshake |
-
-### Configuration
-
-| Env var | Scope | Default | Description |
-| --- | --- | --- | --- |
-| `PORT` | server | `8080` | HTTP + WebSocket listen port |
-| `CASUAL_STORAGE` | server | `memory` | Room Y.Doc persistence: `memory` / `local` / `redis` |
-| `CASUAL_LOCAL_PATH` | server | `/data` | Path for `local` storage (mount a volume) |
-| `CASUAL_FILE_EXT` | server | `.docx` | File extension for the host integration |
-| `CASUAL_PERSONAL_MODE` | server | `none` | Personal auth (Mode 3): `none` / `single` / `multi` |
-| `VITE_COLLAB_ENABLED` | build | `true` in image | Include co-edit code in the bundle |
-
----
-
-## 🛠 Develop
-
-**Prerequisites:** Bun ≥ 1.3.14 (editor), Node ≥ 22 (collab server, the `./collab` submodule)
-
-```sh
-# Editor (browser side)
-cd docx-editor
-bun install
-bun run dev               # Vite dev server  →  http://localhost:5173
-bun run typecheck         # tsc across all packages
-bun test                  # unit tests
-bun run test:e2e          # Playwright suite (Chromium)
-bun run build             # build core + react libs
-
-# Collab server (Node, the ./collab submodule)
-cd collab
-npm install
-npm run dev               # Hocuspocus + REST  →  http://localhost:1234
-```
-
-**Co-editing in dev** requires both servers running. Point the editor at the
-collab server with `VITE_COLLAB_BACKEND=ws://localhost:1234/yjs`, open the Vite
-dev server, upload a doc, and click Share.
-
----
-
-## 📁 Repo Layout
+Authorization is the host's job and happens before the editor is involved.
+The host issues a short-lived token naming the room, the permission and an
+opaque user id; the collaboration server verifies it and enforces the
+permission at the socket. A viewer's updates are refused there — not by hiding
+toolbar buttons.
 
 ```
-.
-├── docx-editor/                  # Editor (browser side)
-│   ├── packages/core/            # DOCX parser, serializer, layout engine, ProseMirror schema
-│   ├── packages/react/           # React <DocxEditor> component (@casualoffice/docs)
-│   ├── examples/vite/            # Demo app deployed at docs.casualoffice.org
-│   └── e2e/                      # Playwright suite
-├── collab/                       # Node collab server (CasualOffice/collab submodule)
-│   └── src/                      # Hocuspocus + Yjs, REST (/api/rooms, /auth, /files, /wopi)
-├── docs/                         # Architecture, co-editing, deployment, round-trip
-├── Dockerfile                    # Multi-stage build (web → collab server + SPA)
-└── docker-compose.yml            # Local dev stack
+your identity system  →  your authorization  →  short-lived token
+                                                       │
+                                                       ▼
+                                              editor + collab server
 ```
 
----
+A host with a completely different identity system, storage and permission
+model can use this without changing the editor. That is the test any change to
+this repository should be held to: *would this still make sense to someone who
+has never heard of the maintainer?*
 
-## 🧱 Stack
+### Serialization
 
-| Concern | Choice |
-| --- | --- |
-| Editor model | ProseMirror schema preserving OOXML round-trip |
-| Layout | Custom paginated layout-painter (Word-fidelity output) |
-| Frontend | React 18 + Vite + TypeScript (strict) |
-| Collab transport | Yjs (CRDT) + `y-prosemirror` via `HocuspocusProvider` |
-| Backend | Node CasualOffice/collab — Hocuspocus + Yjs on Fastify, one Y.Doc per room |
-| Persistence | Room state via `CASUAL_STORAGE` (memory / local / redis); file bytes via host (memory / local / s3 / postgres) |
-| E2E tests | Playwright (Chromium) |
-| Editor toolchain | Bun |
+The collaboration server can turn a room's state back into a `.docx` on
+request, which is how a host stores a snapshot without running a browser.
 
 ---
 
-## 🚫 Explicit Non-Goals
+## Security model
 
-- **No database required** — rooms are in-memory by default; persistence is opt-in (`CASUAL_STORAGE`) and the file-byte host's job. The server dies cleanly and restarts cleanly.
-- **No server-side AI** — inference runs on-device (desktop) or directly against the Anthropic API (web); the collab server has no model access.
-- **No mobile editor** — desktop browsers only. The shell is responsive to 768 px, but the paginated editing UX assumes a pointer device.
+- **Room ids are not authorization.** They are unguessable, which is not the
+  same thing. Access is decided by a token the host issues.
+- **Room initialisation is a capability.** Setting a room's starting document
+  requires a signed, room-bound, single-use token. Without it, anyone who
+  learned a room id could replace the document every participant was about to
+  open.
+- **Viewer enforcement is server-side.** Set `readOnly` on the connection and
+  the socket refuses updates.
+- **Set `CASUAL_JWT_SECRET`.** Without it the initialisation endpoint keeps its
+  original open behaviour, which is only appropriate for a local scratch
+  deployment.
+
+Reporting a vulnerability: [SECURITY.md](SECURITY.md).
 
 ---
 
-## 🛠 Built on
+## Deployment
 
-The editor under [`docx-editor/`](./docx-editor/) is a fork of [eigenpal/docx-editor](https://github.com/eigenpal/docx-editor) (MIT). The fork's modifications, the Go gateway, and this repository are **Apache-2.0**. The AGPL `@eigenpal/docx-editor-agents` package was removed; only MIT code remains in the editor tree.
+**Run one collaboration node.** Hocuspocus keeps an in-memory document per room
+*per process*, and nothing bridges two processes unless you add a synchronising
+extension. Two nodes serving the same room do not merely fail to sync — the
+later one to drain silently overwrites the earlier one's work.
 
-## 📄 License
+Either run a single writer, or pin every room to one node with sticky sessions,
+until [`@hocuspocus/extension-redis`](https://www.npmjs.com/package/@hocuspocus/extension-redis)
+(or equivalent) is wired in. `tests/multinode` demonstrates the failure and is
+expected to fail until then.
 
-Apache-2.0 for this repository — the Dockerfile, docker-compose, CI workflows, and project docs. The collab server is the `collab/` submodule (CasualOffice/collab, Apache-2.0). See [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).
+**Redis is hot state, not storage.** It holds live rooms and expires them.
+Anything you would be upset to lose belongs in a durable store behind the
+persistence hook.
 
-The editor under [`docx-editor/`](./docx-editor/) is based on [eigenpal/docx-editor](https://github.com/eigenpal/docx-editor) and remains under its original **MIT** terms — see [`docx-editor/LICENSE`](./docx-editor/LICENSE). Apache-2.0 + MIT are compatible; the combined work is distributed under Apache-2.0 with MIT attribution preserved.
+---
+
+## Known limitations
+
+- **Single collaboration node** (above).
+- **Touch is unverified.** Every viewport from 1920 down to 390 px renders and
+  accepts typing, but no test has been run on real touch hardware: caret
+  placement, selection handles, the on-screen keyboard and pinch-zoom are
+  unproven.
+- **Google Fonts.** The default build fetches fonts from Google. Self-host them
+  for any deployment where that matters.
+- **Tracked changes** exists as a mode; its behaviour under concurrent editing
+  is not proven.
+- **The bundle is large** — roughly 4 MB gzipped, of which the on-device AI
+  writing feature is the majority. It loads lazily, but it is installed for
+  every consumer.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Fixes that make sense for any host are
+welcome; anything that teaches this repository about a particular product's
+domain is not.
+
+Upstream issues generally belong upstream:
+[CasualOffice/docs](https://github.com/CasualOffice/docs/issues) or
+[eigenpal/docx-editor](https://github.com/eigenpal/docx-editor/issues).
+
+## Licence
+
+Apache-2.0 for the repository; MIT for `docx-editor/`, from its upstream. Both
+licences and the full attribution chain are in [LICENSE](LICENSE),
+[docx-editor/LICENSE](docx-editor/LICENSE) and [NOTICE](NOTICE).
+
+---
+
+*Upstream's own README is preserved at [README.upstream.md](README.upstream.md).*

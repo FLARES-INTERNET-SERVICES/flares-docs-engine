@@ -1,0 +1,184 @@
+# CI for the Flares fork.
+#
+# Everything here runs on a clean checkout with no access to Flares
+# infrastructure — that is the point. A public repository whose tests only pass
+# inside one company's network is not really public.
+#
+# The regression jobs are named after the bugs they stop coming back rather
+# than after the files they run, because in six months the name is the only
+# thing anybody reads.
+name: flares-fork
+
+on:
+  push:
+    branches: [main, 'flares/**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build from a clean clone
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # The design-system submodule is declared with an SSH URL; CI has no key
+      # for it. The repository is public over HTTPS, so rewrite for this job
+      # rather than requiring a deploy key to build an open-source project.
+      - name: Fetch submodules over HTTPS
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install
+        working-directory: docx-editor
+        run: |
+          bun install --frozen-lockfile
+          # Imported by the editor but not pulled in by the workspace resolve.
+          # Without it Vite's dependency scan fails and the build dies late.
+          [ -d node_modules/katex ] || bun add -d katex
+
+      - name: Typecheck
+        working-directory: docx-editor
+        run: bun run typecheck
+
+      - name: Lint
+        working-directory: docx-editor
+        run: bun run lint
+
+      - name: Unit tests
+        working-directory: docx-editor
+        run: bun test packages/
+
+      - name: Build
+        working-directory: docx-editor
+        run: bun run build:demo
+
+      - name: The build must not phone home
+        working-directory: docx-editor
+        run: |
+          # Analytics was removed from the default deployment and must stay
+          # removed. Grepping the built output rather than the source: what
+          # ships is what matters.
+          if grep -rlq "googletagmanager\|google-analytics\|G-1CDWFLK79M" examples/vite/dist/; then
+            echo "::error::Analytics found in the built output"
+            grep -rl "googletagmanager\|google-analytics\|G-1CDWFLK79M" examples/vite/dist/
+            exit 1
+          fi
+          echo "No analytics in the build."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: docx-editor/examples/vite/dist
+          retention-days: 5
+
+  regressions:
+    name: Regressions that must never come back
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: build
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch submodules over HTTPS
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install
+        working-directory: docx-editor
+        run: |
+          bun install --frozen-lockfile
+          [ -d node_modules/katex ] || bun add -d katex
+          npx --yes playwright install --with-deps chromium
+
+      - name: Start the collaboration server
+        env:
+          # Without a secret the initialisation endpoint keeps its original
+          # open behaviour, and the security regressions would pass by
+          # accident rather than by working.
+          CASUAL_JWT_SECRET: ci-only-secret-not-used-anywhere-else
+          REDIS_URL: redis://localhost:6379
+        run: |
+          cd collab && bun install --frozen-lockfile
+          npm start &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/health && break
+            sleep 2
+          done
+
+      - name: Build and serve the editor
+        working-directory: docx-editor
+        run: |
+          bun run build:demo
+          npx --yes serve -s examples/vite/dist -l 5196 &
+          for i in $(seq 1 30); do curl -sf http://localhost:5196/ && break; sleep 2; done
+
+      # A shared document must not arrive blank for everyone but the person who
+      # shared it. This is the defect the fork exists to fix.
+      - name: Imported documents reach collaborators
+        run: node tests/regressions/imported-docx-collaboration.mjs
+
+      # Exports grew by one copy of every image on every save-and-reopen:
+      # 137 KB to 1.1 MB in ten rounds.
+      - name: Exports do not grow without bound
+        run: node tests/regressions/roundtrip-growth.mjs
+
+      # A restart left every document intact in storage and unreachable.
+      - name: Documents survive a restart
+        run: node tests/regressions/durability.mjs
+
+      # Setting a room's starting document took no credential at all.
+      - name: Room initialisation requires a capability
+        run: node tests/regressions/seed-security.mjs
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: regression-artifacts
+          path: tests/regressions/results/
+          retention-days: 7
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Audit
+        working-directory: docx-editor
+        # Advisories are reported, not fatal. Most of the current set are in
+        # the dev tree or reachable only through a lazily-loaded optional
+        # feature, and failing the build on them would train everyone to
+        # ignore the job.
+        run: bun audit || true

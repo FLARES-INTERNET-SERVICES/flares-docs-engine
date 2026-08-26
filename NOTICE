@@ -49,3 +49,26 @@ This product depends on the following Open Source software at runtime
 "Casual Editor" is a project name only and conveys no implication of
 endorsement by, or affiliation with, Microsoft Corporation, ECMA
 International, or the authors of any other software referenced here.
+
+─── Flares fork ─────────────────────────────────────────────────────
+
+This repository is a fork maintained by Flares Inc.
+
+  Upstream:  CasualOffice/docs (https://github.com/CasualOffice/docs)
+             forked at commit 7b03e1113244130375b69ce4258744d097252917
+  Fork:      flaresinc/flares-docs-engine
+
+All upstream licensing above is unchanged and continues to apply. The
+Apache-2.0 licence governs this repository as a whole; the MIT licence
+at `docx-editor/LICENSE` continues to govern the editor tree, including
+Flares' modifications to it.
+
+Flares Inc. did not write the document engine. It is EigenPal's work,
+by way of Casual Editor's fork of it, and the copyright notices in both
+places say so. What Flares changed is recorded in PATCHES.md — a small
+set of collaboration, security and correctness fixes, several of which
+are intended to go back upstream.
+
+"Flares" is a trademark of Flares Inc. Its use here identifies the
+maintainer of this fork and implies no endorsement of Flares by the
+upstream projects, nor of the upstream projects by Flares.
