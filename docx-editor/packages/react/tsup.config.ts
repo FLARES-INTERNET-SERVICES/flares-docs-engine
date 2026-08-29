@@ -103,11 +103,11 @@ const mainConfig = defineConfig({
     'prosemirror-transform',
     'prosemirror-view',
   ],
-  // The design-system isn't on npm (git submodule), so its React components
-  // MUST be bundled into our dist — consumers can't resolve
-  // `@schnsrw/design-system` themselves. It has no deps of its own (react is a
-  // peer we already externalize), so this stays small.
-  noExternal: ['@schnsrw/design-system'],
+  // The design-system dependency is gone: it was a git submodule this
+  // repository cannot fetch, so consumers could not resolve it and a clean
+  // clone could not build. The three components the editor used from it now
+  // live in src/components/ui, which is ordinary source and needs no bundling
+  // exception.
   injectStyle: false,
   plugins: [rewriteWorkerUrls, rewriteWorkerUrlsInSource],
 });

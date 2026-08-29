@@ -3457,7 +3457,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   );
 
   // Color theme: 'auto' (follow OS) | 'light' | 'dark'. Persisted in
-  // localStorage. The @schnsrw/design-system tokens are manual-only — they
+  // localStorage. The editor-tokens.css tokens are manual-only — they
   // only define a [data-theme='dark'] override, with no prefers-color-scheme
   // fallback — so 'auto' is resolved to a concrete 'light'/'dark' attribute
   // in JS (resolveColorTheme below) and a single [data-theme='dark'] selector

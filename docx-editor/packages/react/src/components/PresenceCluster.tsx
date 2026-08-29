@@ -11,7 +11,7 @@
  * Docs / Excel-online convention the sister sheet app shipped.
  *
  * This is a NET-NEW surface, so it's built from the shared
- * `@schnsrw/design-system` UI-kit (AvatarStack / Badge / Button) rather than
+ * local UI kit in ./ui (AvatarStack / Badge / Button) rather than
  * the editor's hand-rolled chrome — the kit's Avatar already carries the
  * green "active now" ring for live peers. The editor's proven toolbar/icon
  * system is intentionally left as-is.
@@ -21,7 +21,7 @@
  */
 
 import type { CSSProperties, ReactElement } from 'react';
-import { AvatarStack, Badge, Button, type BadgeTone } from '@schnsrw/design-system';
+import { AvatarStack, Badge, Button, type BadgeTone } from './ui';
 import { useTranslation } from '../i18n';
 
 export interface PresencePeer {

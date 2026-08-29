@@ -1,0 +1,114 @@
+/* Editor design tokens.
+ *
+ * These replace `@schnsrw/design-system`, which lived in a git submodule the
+ * public repository cannot fetch — so a clean clone could not build the editor
+ * at all. Everything the editor actually consumed was a CSS custom property;
+ * exactly 33 of them, listed below in the order the editor uses them.
+ *
+ * The VALUES here are this project's own. The variable NAMES are kept because
+ * they are the interface the editor's stylesheets and components already speak,
+ * and renaming them would be a rewrite rather than a dependency removal.
+ *
+ * Theming works by redefinition, not by duplication: a dark block redefines
+ * only the properties whose ROLE changes. Anything not listed there inherits,
+ * so a token added to :root cannot be silently missing in dark mode.
+ */
+
+:root {
+  /* --- Surfaces, from furthest back to nearest the reader ---------------- */
+  --color-surface: #ffffff;
+  --color-surface-alt: #f7f8f9;
+  --color-surface-raised: #ffffff;
+  --color-surface-strip: #f0f2f4;
+
+  /* --- Text, in descending prominence ----------------------------------- */
+  --color-text: #16181d;
+  --color-text-secondary: #454b54;
+  --color-text-muted: #6b7280;
+  --color-text-disabled: #a1a7b0;
+
+  /* --- Lines. `divider` separates, `border-strong` encloses. ------------- */
+  --color-divider: #e5e7eb;
+  --color-border-strong: #cbd1d9;
+  --color-hover: rgba(22, 24, 29, 0.055);
+
+  /* --- Accent: the one colour that means "this is actionable" ----------- */
+  --color-accent: #1b6ef3;
+  --color-accent-hover: #1558c9;
+  --color-accent-soft: rgba(27, 110, 243, 0.11);
+
+  /* --- Status. Each pairs a legible foreground with a soft background so
+   *     a badge never relies on colour alone to be readable. -------------- */
+  --color-success: #0f7b45;
+  --color-success-soft: rgba(15, 123, 69, 0.12);
+  --color-warning: #9a6207;
+  --color-warning-soft: rgba(154, 98, 7, 0.13);
+  --color-danger: #c02626;
+  --color-danger-soft: rgba(192, 38, 38, 0.12);
+  --color-info: #1b6ef3;
+  --color-info-soft: rgba(27, 110, 243, 0.11);
+
+  /* --- Typography ------------------------------------------------------- */
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --text-xs: 0.75rem;
+
+  /* --- Spacing. A 4px step: 1 = 4px, 2 = 8px, 4 = 16px. ------------------ */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-4: 1rem;
+
+  /* --- Shape and depth -------------------------------------------------- */
+  --radius-lg: 10px;
+  --shadow-2: 0 1px 2px rgba(16, 20, 27, 0.06), 0 4px 12px rgba(16, 20, 27, 0.08);
+
+  /* --- Motion. Durations are short on purpose: an editor that animates
+   *     slowly feels like an editor that is lagging. --------------------- */
+  --motion-fast: 90ms;
+  --motion-base: 150ms;
+  --motion-slow: 240ms;
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* Dark. Only the properties whose role changes are redefined — surfaces darken,
+ * text lightens, and the accent brightens so it keeps its contrast against a
+ * dark surface rather than sinking into it. */
+[data-theme='dark'] {
+  --color-surface: #16181d;
+  --color-surface-alt: #1c1f26;
+  --color-surface-raised: #21252d;
+  --color-surface-strip: #1c1f26;
+
+  --color-text: #eceef1;
+  --color-text-secondary: #b9bfc8;
+  --color-text-muted: #8b929d;
+  --color-text-disabled: #5f6670;
+
+  --color-divider: #2b3039;
+  --color-border-strong: #3a414c;
+  --color-hover: rgba(236, 238, 241, 0.07);
+
+  --color-accent: #5c9bff;
+  --color-accent-hover: #7db0ff;
+  --color-accent-soft: rgba(92, 155, 255, 0.16);
+
+  --color-success: #4bbd82;
+  --color-success-soft: rgba(75, 189, 130, 0.16);
+  --color-warning: #d9a441;
+  --color-warning-soft: rgba(217, 164, 65, 0.16);
+  --color-danger: #f0736b;
+  --color-danger-soft: rgba(240, 115, 107, 0.16);
+  --color-info: #5c9bff;
+  --color-info-soft: rgba(92, 155, 255, 0.16);
+
+  --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 14px rgba(0, 0, 0, 0.42);
+}
+
+/* Respect a reader who has asked for less movement. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+    --motion-slow: 0ms;
+  }
+}
