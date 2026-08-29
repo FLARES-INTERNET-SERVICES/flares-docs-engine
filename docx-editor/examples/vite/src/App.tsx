@@ -580,6 +580,16 @@ export function App() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${window.location.host}/yjs`;
   }, []);
+  // A host application may serve the starting .docx itself, from an endpoint
+  // that has already authorised this reader for this document. Same-origin
+  // only: an absolute URL here would let a crafted link point the editor at
+  // any host, and the document it loaded would look like the real one.
+  const seedOverride = useMemo(() => {
+    const raw = new URLSearchParams(window.location.search).get('seed');
+
+    return raw && raw.startsWith('/') && !raw.startsWith('//') ? raw : undefined;
+  }, []);
+
   const collabHttp = useMemo(
     () =>
       collabWs
@@ -1426,6 +1436,7 @@ export function App() {
         room={collabParams.room}
         backend={collabParams.backend}
         collabHttp={collabHttp}
+        seedOverride={seedOverride}
         author={randomAuthor}
         zoom={autoZoom}
         isMobile={isMobile}
@@ -1631,6 +1642,12 @@ interface CollabAppProps {
   room: string;
   backend: string;
   collabHttp: string;
+  /**
+   * Where to fetch the starting .docx, if not the collab server's own room
+   * seed. A host application that already authenticates its readers serves it
+   * from there instead, so browsers never need the collab REST surface.
+   */
+  seedOverride?: string;
   author: string;
   zoom: number;
   isMobile: boolean;
@@ -1662,6 +1679,7 @@ function CollabApp({
   room,
   backend,
   collabHttp,
+  seedOverride,
   author,
   zoom,
   isMobile,
@@ -1811,11 +1829,30 @@ function CollabApp({
     let cancelled = false;
     setSeed({ kind: 'loading' });
 
-    fetch(`${collabHttp}/api/rooms/${encodeURIComponent(room)}/seed`)
+    // Where the starting .docx comes from.
+    //
+    // By default the collaboration server's own room seed. A host application
+    // can pass ?seed= to serve it from an endpoint of its own instead, which
+    // is how an app that already authenticates the reader avoids exposing the
+    // collab REST surface to browsers at all: it hands over a document it has
+    // already decided this person may open.
+    const seedUrl = seedOverride || `${collabHttp}/api/rooms/${encodeURIComponent(room)}/seed`;
+
+    fetch(seedUrl, { credentials: seedOverride ? 'include' : 'same-origin' })
       .then(async (res) => {
         if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          throw new Error(text || `HTTP ${res.status}`);
+          // Deliberately NOT the response body. A misrouted request lands on
+          // whatever else is serving that host, and pasting its error page
+          // into the editor shows the reader a wall of someone else's HTML
+          // instead of what went wrong.
+          throw new Error(`The document could not be loaded (HTTP ${res.status}).`);
+        }
+
+        // A 200 that is not a document is still a failure — usually a login
+        // page or an SPA fallback answering with the app shell.
+        const type = res.headers.get('Content-Type') ?? '';
+        if (type.includes('text/html')) {
+          throw new Error('The document could not be loaded (unexpected response).');
         }
         const fromHeader = parseFileNameFromDisposition(res.headers.get('Content-Disposition'));
         const buffer = await res.arrayBuffer();
@@ -1838,7 +1875,7 @@ function CollabApp({
     return () => {
       cancelled = true;
     };
-  }, [collabHttp, room, attempt]);
+  }, [collabHttp, room, attempt, seedOverride]);
 
   // ── Put the imported document into the shared state, exactly once ──
   //
