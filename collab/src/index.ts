@@ -14,7 +14,7 @@ import { createHost } from './host/index.js';
 import { fileFormat } from './host/format.js';
 import { registerWopiRoutes } from './wopi.js';
 import { timingSafeEqual } from 'node:crypto';
-import { serializeYDocToDocx } from './internal/serialize.js';
+import { pathToFileURL } from 'node:url';
 import { AdminConfigStore } from './admin/config.js';
 import { registerAdminRoutes } from './admin/routes.js';
 import { WebhookDispatcher } from './admin/webhooks.js';
@@ -314,6 +314,19 @@ app.post<{ Body: { state?: string; name?: string; base?: string } }>(
     }
 
     try {
+      // Imported by absolute path, and lazily, so Node resolves the editor's
+      // ProseMirror stack from the editor's own tree. Two copies of
+      // prosemirror-model in one process cannot exchange documents, and a
+      // linked package brings its own. Lazy also keeps the editor out of the
+      // startup path: a deployment that never serializes never loads it.
+      const modulePath =
+        process.env.CASUAL_SERIALIZER_PATH ??
+        resolve(here, '../../docx-editor/scripts/serialize-ydoc.mts');
+
+      const { serializeYDocToDocx } = (await import(
+        pathToFileURL(modulePath).href
+      )) as typeof import('../../docx-editor/scripts/serialize-ydoc.mjs');
+
       const docx = await serializeYDocToDocx({
         state: new Uint8Array(Buffer.from(state, 'base64')),
         name: typeof req.body?.name === 'string' ? req.body.name : 'document.docx',
