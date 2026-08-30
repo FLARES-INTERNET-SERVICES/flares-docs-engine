@@ -1713,6 +1713,43 @@ function CollabApp({
     []
   );
 
+  // Tell the host we are here, and keep answering until it stops asking.
+  //
+  // A single announcement on mount is lost whenever the host's listener is not
+  // registered yet -- iframe and parent initialise independently and neither
+  // ordering is guaranteed. So the host may poll with `casualoffice:hello` and
+  // this answers every time, which makes the handshake deterministic rather
+  // than a race the host usually wins.
+  useEffect(() => {
+    if (!hostOwnsPresence || window.parent === window) {
+      return;
+    }
+
+    const announce = () => {
+      try {
+        window.parent.postMessage({ type: 'casualoffice:ready' }, hostOrigin || '*');
+      } catch {
+        // A cross-origin parent that refuses the message is the host's choice.
+      }
+    };
+
+    const onHostMessage = (event: MessageEvent) => {
+      // Only the host we were told about may prompt us.
+      if (hostOrigin && event.origin !== hostOrigin) {
+        return;
+      }
+
+      if ((event.data as { type?: string } | null)?.type === 'casualoffice:hello') {
+        announce();
+      }
+    };
+
+    window.addEventListener('message', onHostMessage);
+    announce();
+
+    return () => window.removeEventListener('message', onHostMessage);
+  }, [hostOwnsPresence, hostOrigin]);
+
   // The host can open a document read-only by asking for `mode=viewing`
   // (SuperDoc's vocabulary; `suggesting` is also honoured). A generic embedding
   // hook: the host decides who may write from its own permissions and tells the
