@@ -13,6 +13,8 @@ import { createStorage } from './storage.js';
 import { createHost } from './host/index.js';
 import { fileFormat } from './host/format.js';
 import { registerWopiRoutes } from './wopi.js';
+import { timingSafeEqual } from 'node:crypto';
+import { serializeYDocToDocx } from './internal/serialize.js';
 import { AdminConfigStore } from './admin/config.js';
 import { registerAdminRoutes } from './admin/routes.js';
 import { WebhookDispatcher } from './admin/webhooks.js';
@@ -267,6 +269,69 @@ app.get('/health', async () => ({
   ts: Date.now(),
   rooms: rooms.snapshot().length,
 }));
+
+/**
+ * Convert a Yjs document to .docx, for a trusted server-side caller.
+ *
+ * A host application owns the canonical file and needs bytes to store a
+ * version of it. The conversion lives in the editor's TypeScript, so a host
+ * written in another language cannot do it — and having the browser upload the
+ * bytes instead would make whatever a client sends the canonical document.
+ *
+ * `/internal/` because this is not a browser surface: it is bearer-authenticated
+ * with the shared service credential and expected to be reachable only over
+ * loopback or a private network. A reverse proxy must not expose it.
+ */
+app.post<{ Body: { state?: string; name?: string; base?: string } }>(
+  '/internal/serialize',
+  async (req, reply) => {
+    const expected = process.env.CASUAL_JWT_SECRET ?? '';
+
+    if (expected === '') {
+      // Refuse rather than accept everything: an unset secret must not read as
+      // "no authentication required".
+      req.log.error('internal/serialize called but CASUAL_JWT_SECRET is unset');
+
+      return reply.code(503).send({ error: 'not_configured' });
+    }
+
+    const offered = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+
+    // Constant-time: a length-independent comparison here leaks the secret one
+    // character at a time to anything that can measure the response.
+    const ok =
+      offered.length === expected.length &&
+      timingSafeEqual(Buffer.from(offered), Buffer.from(expected));
+
+    if (!ok) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+
+    const state = typeof req.body?.state === 'string' ? req.body.state : '';
+
+    if (state === '') {
+      return reply.code(400).send({ error: 'state_required' });
+    }
+
+    try {
+      const docx = await serializeYDocToDocx({
+        state: new Uint8Array(Buffer.from(state, 'base64')),
+        name: typeof req.body?.name === 'string' ? req.body.name : 'document.docx',
+        base: typeof req.body?.base === 'string' && req.body.base !== ''
+          ? new Uint8Array(Buffer.from(req.body.base, 'base64'))
+          : undefined,
+      });
+
+      return reply.send({ docx: Buffer.from(docx).toString('base64') });
+    } catch (err) {
+      // The caller gets a category, not a stack: it is a different process and
+      // usually a different language, and the detail belongs in our log.
+      req.log.error({ err }, 'internal/serialize failed');
+
+      return reply.code(500).send({ error: 'serialize_failed' });
+    }
+  },
+);
 
 /**
  * Create a fresh room. Body is optional JSON `{ password?: string }`.
