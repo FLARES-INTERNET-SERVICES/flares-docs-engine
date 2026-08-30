@@ -17,7 +17,7 @@
 import * as Y from 'yjs';
 import { yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import { schema, fromProseDoc } from '@eigenpal/docx-core/prosemirror';
-import { serializeDocx, parseDocx } from '@eigenpal/docx-core/headless';
+import { repackDocx, createDocx, parseDocx } from '@eigenpal/docx-core/headless';
 
 export interface SerializeRequest {
   /** A Yjs update, as raw bytes. */
@@ -46,10 +46,21 @@ export async function serializeYDocToDocx(request: SerializeRequest): Promise<Ui
     // second prosemirror-model and produces "multiple versions loaded".
     const pmDoc = schema.nodeFromJSON(json);
 
+    // A base is worth having and not required. With one, the result keeps
+    // everything the editor never touches -- styles, numbering, footnotes, the
+    // parts of the package a bare round trip drops. Without one, the document
+    // is built from scratch and those are the defaults.
     const base = request.base ? await parseDocx(request.base) : undefined;
     const document = fromProseDoc(pmDoc, base);
 
-    return await serializeDocx(document);
+    // repackDocx writes the ZIP. serializeDocx (serializeDocument) produces the
+    // document XML only -- a fragment of the package, not a file any word
+    // processor will open.
+    const packed = base
+      ? await repackDocx(document)
+      : await createDocx(document);
+
+    return new Uint8Array(packed);
   } finally {
     // Per-request scratch. Left undestroyed, a serialize every few minutes per
     // open document is a slow leak.
