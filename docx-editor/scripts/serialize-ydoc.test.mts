@@ -10,7 +10,7 @@ import JSZip from 'jszip';
 import * as Y from 'yjs';
 import { prosemirrorToYXmlFragment } from 'y-prosemirror';
 import { schema } from '@eigenpal/docx-core/prosemirror';
-import { serializeYDocToDocx } from './serialize-ydoc.mts';
+import { docxToYDocState, serializeYDocToDocx } from './serialize-ydoc.mts';
 
 const { nodes, marks } = schema;
 const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
@@ -149,4 +149,54 @@ test('text survives a repeated save on its own output', async () => {
   const numbering = await part(second, 'word/numbering.xml');
   assert.equal(numbering!.match(/<w:num /g)?.length, 2, 'definitions do not accumulate');
   assert.match((await part(second, 'word/document.xml'))!, />A bullet</);
+});
+
+const fragmentText = (state: Uint8Array) => {
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, state);
+  return doc.getXmlFragment('prosemirror').toString().replace(/<[^>]*>/g, '');
+};
+
+test('a file becomes a room holding what it says', async () => {
+  const docx = await serializeYDocToDocx({ state: stateOf(...report()), name: 'a.docx', base: await blankBase() });
+
+  const text = fragmentText(await docxToYDocState(docx));
+
+  assert.match(text, /A Title/);
+  assert.match(text, /A bullet/);
+  assert.equal(text.split('A Title').length - 1, 1, 'once');
+});
+
+test('and that room saves back to a file saying the same thing', async () => {
+  const original = await serializeYDocToDocx({ state: stateOf(...report()), name: 'a.docx', base: await blankBase() });
+
+  const again = await serializeYDocToDocx({ state: await docxToYDocState(original), name: 'a.docx', base: original });
+
+  const words = (xml: string) => [...xml.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join('');
+  assert.equal(words((await part(again, 'word/document.xml'))!), words((await part(original, 'word/document.xml'))!));
+});
+
+test('a blank file becomes a room with one empty paragraph in it', async () => {
+  const state = await docxToYDocState(await blankBase());
+
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, state);
+  assert.equal(doc.getXmlFragment('prosemirror').length, 1);
+  assert.equal(fragmentText(state), '');
+});
+
+test('the first person to open it has nothing to add to it', async () => {
+  const docx = await serializeYDocToDocx({ state: stateOf(...report()), name: 'a.docx', base: await blankBase() });
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, await docxToYDocState(docx));
+
+  const ids = (doc.getXmlFragment('prosemirror').toArray() as Y.XmlElement[]).map((p) => p.getAttribute('paraId'));
+
+  assert.ok(ids.length >= 4);
+  assert.ok(ids.every((id) => /^[0-9A-F]{8}$/.test(String(id))), ids.join());
+  assert.equal(new Set(ids).size, ids.length, 'each its own');
+});
+
+test('something that is not a Word file is refused, not turned into an empty room', async () => {
+  await assert.rejects(docxToYDocState(new TextEncoder().encode('not a word document')));
 });

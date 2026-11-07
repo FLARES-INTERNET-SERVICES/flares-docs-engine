@@ -11,7 +11,7 @@ revision inside app image `casualoffice/docs@sha256:0f9892411476f45a…`
 
 **Tagged:** `0.0.5-flares.1`.
 
-**Totals:** 22 patches.
+**Totals:** 23 patches.
 
 | | Files | +/− |
 | --- | --- | --- |
@@ -52,6 +52,7 @@ ProseMirror schema and the layout engine are untouched.
 | **P020** | Runtime read-only did not take effect | editor core | 1 | +14 / −4 | yes, strongly |
 | **P021** | A host could not read a room, and exports lost lists and styles | collab server + editor scripts | 6 | +622 / −21 | yes |
 | **P022** | Anyone with a room id could read and write it | collab server + editor | 7 | +1232 / −6 | yes |
+| **P023** | Cleanup deleted stored rooms, and any socket could start an empty one | collab server + editor | 17 | +2755 / −81 | yes |
 
 ---
 
@@ -625,3 +626,52 @@ Two things to watch:
   themselves, P001 should be retired rather than merged.
 - **The editor core is churning fast** (72 commits/month), but P006 is four
   lines in a stable serializer path.
+
+---
+
+## P023 — Cleanup deleted stored rooms, and any socket could start an empty one
+
+The room registry is in memory and starts empty on every restart. A room's uploaded seed
+is what kept it from being evicted, and eviction deleted its stored state. So after a
+restart, anyone opening a room and closing it deleted it about 60 minutes later, however
+much was in it. Reproduced, and `collab-server.patch` does not protect an existing room.
+
+Opening a lost room then started an empty one, which looked like a document with nothing
+in it, and typing into it made that true. Every open also added an empty paragraph: the
+editor bound to a Y.Doc that had not synced yet saw an empty fragment and published its own
+starting paragraph.
+
+**Fix.** With sessions enforced, a host fills a room before anyone connects:
+
+- `RoomKeeper` (`collab/src/room-keeper.ts`) and `POST /internal/rooms/:id/prepare`. A
+  durable state or a `.docx` becomes the room's first state, one request per room at a
+  time. Nothing a room holds is replaced: a state it does not cover is merged in, and a
+  file only fills a room with no content.
+- A socket to a room with nothing stored is refused, so no client can start an empty one.
+- Eviction no longer touches storage. `DELETE /internal/rooms/:id` is the only way stored
+  state is removed; it closes sockets, and a late save cannot bring the room back.
+- `RedisStorage` stores with no expiry until the host reads the room quoting its
+  fingerprint, so work the host has not read does not expire. The next save stops the clock.
+- A store that does not answer is reported as unavailable, not as empty, within
+  `ROOM_STORAGE_TIMEOUT_MS`. The Redis client otherwise queues for as long as it is away.
+- `/api/rooms*` requires the service credential: a browser has no reason to call it.
+- `SessionLedger` refuses every session after a restart until the host has sent its
+  revocations, so a revoked token has no moment when it works again.
+- `docxToYDocState()` in `scripts/serialize-ydoc.mts`, with the paragraph ids the editor
+  would otherwise write on first open, so opening a document changes nothing.
+- `docx-editor/package.json` declares `@eigenpal/docx-core`, `y-prosemirror` and `yjs`: the
+  converters run from `docx-editor/scripts` and a clean install otherwise cannot resolve them.
+- The editor, given `?prepared=1`, never seeds, and mounts only once synced. It reports
+  edits not yet acknowledged (`unsynced` in `casualoffice:collab`), so a host saying
+  "saved" can know about work still on its way.
+
+**Not changed:** anonymous rooms with no `OFFICE_SIGNING_SECRET` keep their timed expiry,
+and clients still seed them, but they too are no longer deleted by cleanup.
+
+**Not compatible with `patches/collab-server.patch`,** which production does not run. It
+guards the uploaded seed and persists the registry so a restart could find it. A host no
+longer uploads a seed, and the registry no longer decides anything about stored state. What
+it still offers is a credential on `/api/rooms*`, which would need rebasing onto this.
+
+**Tests:** `collab/src/room-keeper.unit.test.ts`, `collab/src/room-lifecycle.integration.test.ts`,
+`docx-editor/scripts/serialize-ydoc.test.mts`; end to end in Flares' `tests/docs-recovery.mjs`.

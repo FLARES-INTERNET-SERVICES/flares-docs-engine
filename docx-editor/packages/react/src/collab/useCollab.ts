@@ -63,6 +63,10 @@ export interface CollabState {
   awareness: HocuspocusProvider['awareness'];
   /** Connect again, using a fresh token. Unsaved local edits resync once connected. */
   reconnect: () => void;
+  /** Edits the server has not yet acknowledged. Above zero, they exist only here. */
+  unsyncedChanges: number;
+  /** Has this document ever finished syncing? Stays true through later reconnects. */
+  hasSynced: boolean;
   /**
    * The room's Y.Doc. Exposed so a host can tell an EMPTY room from one
    * that already holds a document before deciding whether to seed it —
@@ -262,6 +266,8 @@ export function useCollab({
 
   const [status, setStatus] = useState<CollabStatus>('connecting');
   const [peers, setPeers] = useState<CollabPeer[]>([]);
+  const [unsyncedChanges, setUnsyncedChanges] = useState(0);
+  const [hasSynced, setHasSynced] = useState(false);
   const [aiIsEditing, setAiIsEditing] = useState(false);
   const [aiEditingBy, setAiEditingBy] = useState<string | null>(null);
 
@@ -300,6 +306,10 @@ export function useCollab({
     };
 
     const onStatus = (e: { status: CollabStatus }) => setStatus(e.status);
+    const onUnsynced = () => setUnsyncedChanges(provider.unsyncedChanges);
+    const onSynced = ({ state }: { state: boolean }) => {
+      if (state) setHasSynced(true);
+    };
 
     const onStateless = ({ payload }: { payload: string }) => {
       try {
@@ -323,12 +333,16 @@ export function useCollab({
     };
 
     provider.on('status', onStatus);
+    provider.on('unsyncedChanges', onUnsynced);
+    provider.on('synced', onSynced);
     provider.on('stateless', onStateless);
     awareness.on('change', refreshPeers);
     refreshPeers();
 
     return () => {
       provider.off('status', onStatus);
+      provider.off('unsyncedChanges', onUnsynced);
+      provider.off('synced', onSynced);
       provider.off('stateless', onStateless);
       awareness.off('change', refreshPeers);
     };
@@ -347,6 +361,8 @@ export function useCollab({
     plugins,
     status,
     peers,
+    unsyncedChanges,
+    hasSynced,
     aiIsEditing,
     aiEditingBy,
     awareness: provider.awareness,

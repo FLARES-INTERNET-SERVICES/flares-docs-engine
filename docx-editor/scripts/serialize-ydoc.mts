@@ -15,8 +15,8 @@
  *   Yjs update -> Y.Doc -> ProseMirror JSON -> fromProseDoc -> serializeDocx
  */
 import * as Y from 'yjs';
-import { yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
-import { schema, fromProseDoc } from '@eigenpal/docx-core/prosemirror';
+import { prosemirrorToYXmlFragment, yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
+import { schema, fromProseDoc, toProseDoc } from '@eigenpal/docx-core/prosemirror';
 import { repackDocx, createDocx, parseDocx } from '@eigenpal/docx-core/headless';
 import { assertTextSurvived, completePackage } from './complete-package.mts';
 
@@ -31,6 +31,58 @@ export interface SerializeRequest {
    * footnotes — which a bare round trip would drop.
    */
   base?: Uint8Array;
+}
+
+type JsonNode = { type: string; attrs?: Record<string, unknown>; content?: JsonNode[] };
+
+/**
+ * Give every paragraph the id the editor would.
+ *
+ * The editor gives one to any paragraph without, as soon as it opens a document. In a
+ * room that is a change to the document, made by whoever happens to open it first:
+ * nothing anyone wrote, and it would still have to be saved as a new version.
+ */
+function withParagraphIds(node: JsonNode, seen = new Set<string>()): JsonNode {
+  if (node.type === 'paragraph') {
+    const existing = node.attrs?.paraId;
+
+    if (typeof existing === 'string' && existing !== '' && !seen.has(existing)) {
+      seen.add(existing);
+    } else {
+      let id: string;
+      do {
+        // Word's rule: eight hex digits, below 0x80000000.
+        id = Math.floor(Math.random() * 0x7fffffff + 1).toString(16).toUpperCase().padStart(8, '0');
+      } while (seen.has(id));
+      seen.add(id);
+      node.attrs = { ...node.attrs, paraId: id };
+    }
+  }
+
+  node.content?.forEach((child) => withParagraphIds(child, seen));
+
+  return node;
+}
+
+/**
+ * .docx -> Yjs update: a room's first state, when all there is to go on is a file.
+ *
+ * Done here rather than by whichever browser arrives first, because that browser may
+ * belong to a viewer, whose updates the server refuses, or may never finish.
+ * The same conversion the editor does when it seeds a room itself.
+ */
+export async function docxToYDocState(docx: Uint8Array): Promise<Uint8Array> {
+  const parsed = await parseDocx(docx);
+  const pmDoc = schema.nodeFromJSON(withParagraphIds(toProseDoc(parsed, { styles: parsed.package.styles }).toJSON()));
+  const ydoc = new Y.Doc();
+
+  try {
+    prosemirrorToYXmlFragment(pmDoc, ydoc.getXmlFragment('prosemirror'));
+
+    return Y.encodeStateAsUpdate(ydoc);
+  } finally {
+    ydoc.destroy();
+  }
 }
 
 export async function serializeYDocToDocx(request: SerializeRequest): Promise<Uint8Array> {

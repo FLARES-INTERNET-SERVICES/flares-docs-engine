@@ -49,7 +49,19 @@ function token(room: string, perm: string, overrides: Claims = {}, secret = SIGN
   );
 }
 
-const newRoom = () => `room-${randomBytes(6).toString('hex')}`;
+const roomId = () => `room-${randomBytes(6).toString('hex')}`;
+
+/** A room as the host leaves it before issuing a session: filled, here with nothing. */
+async function newRoom(): Promise<string> {
+  const room = roomId();
+  const response = await fetch(`${HTTP}/internal/rooms/${room}/prepare`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${SERVICE_TOKEN}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ state: Buffer.from(Y.encodeStateAsUpdate(new Y.Doc())).toString('base64') }),
+  });
+  assert.equal(response.status, 200);
+  return room;
+}
 
 /** An update that adds `text` to a document, as a client's Y.Doc would encode it. */
 function updateWriting(text: string, seed?: Uint8Array): Uint8Array {
@@ -184,7 +196,7 @@ async function revoke(sessions: Array<{ sid: string; exp: number }>, credential 
 
 /** A room holding `text`, written by a legitimate editor, who is then still connected. */
 async function roomWith(text: string) {
-  const room = newRoom();
+  const room = await newRoom();
   const editor = await RawClient.open();
   const reply = await editor.auth(room, token(room, 'edit'));
   assert.equal(reply.kind, AUTH_REPLY.authenticated);
@@ -195,7 +207,7 @@ async function roomWith(text: string) {
 }
 
 before(async () => {
-  server = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
+  server = spawn(process.env.COLLAB_NODE ?? process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     env: {
       ...process.env,
       NODE_ENV: 'test',
@@ -222,6 +234,9 @@ before(async () => {
     }
     await sleep(100);
   }
+
+  // What the host does on every run, and what lets this server admit anyone.
+  assert.equal((await revoke([])).status, 200);
 });
 
 after(() => {
@@ -236,7 +251,7 @@ describe('a legitimate editor', () => {
   });
 
   it('writes with a sync step 2, and the room keeps it', async () => {
-    const room = newRoom();
+    const room = await newRoom();
     const editor = await RawClient.open();
     await editor.auth(room, token(room, 'edit'));
     editor.send(syncFrame(room, SYNC.step2, updateWriting('synced in')));
@@ -246,7 +261,7 @@ describe('a legitimate editor', () => {
   });
 
   it('is told it may write', async () => {
-    const room = newRoom();
+    const room = await newRoom();
     const editor = await RawClient.open();
     const reply = await editor.auth(room, token(room, 'edit'));
     assert.equal(reply.scope, 'read-write');
@@ -358,7 +373,7 @@ describe('a connection with no valid session', () => {
     ['no session id', (room) => token(room, 'edit', { sid: '' })],
     ['an unknown permission', (room) => token(room, 'admin')],
     ['no permission', (room) => token(room, 'edit', { perm: undefined })],
-    ['a session for another room', () => token(newRoom(), 'edit')],
+    ['a session for another room', () => token(roomId(), 'edit')],
   ];
 
   for (const [name, make] of invalid) {
@@ -395,12 +410,12 @@ describe('a connection with no valid session', () => {
   });
 
   it('does not create a room by asking for one', async () => {
-    const room = newRoom();
+    const room = roomId();
     const intruder = await RawClient.open();
     await intruder.auth(room, 'anon');
     await settle();
     assert.equal((await roomState(room)).exists, false);
-    const registered = await fetch(`${HTTP}/api/rooms/${room}/info`);
+    const registered = await fetch(`${HTTP}/api/rooms/${room}/info`, { headers: { authorization: `Bearer ${SERVICE_TOKEN}` } });
     assert.equal(registered.status, 404, 'it was added to the registry');
     intruder.close();
   });

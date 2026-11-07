@@ -1701,7 +1701,7 @@ function CollabApp({
     new URLSearchParams(window.location.search).get('mode') === 'viewing' ? 'view' : 'edit'
   );
 
-  const { plugins, status, peers, metaMap, ydoc, commentsMap, reconnect } = useCollab({
+  const { plugins, status, peers, unsyncedChanges, hasSynced, metaMap, ydoc, commentsMap, reconnect } = useCollab({
     room,
     backend,
     user,
@@ -1800,6 +1800,9 @@ function CollabApp({
         {
           type: 'casualoffice:collab',
           status,
+          // Whether what was typed here has reached the server yet. A host saying
+          // "saved" cannot see this any other way.
+          unsynced: unsyncedChanges,
           peers: peers.map((p) => ({ name: p.name, color: p.color, isLocal: p.isLocal })),
         },
         hostOrigin || '*'
@@ -1808,7 +1811,7 @@ function CollabApp({
       // A cross-origin parent that refuses the message is the host's choice;
       // the editor keeps working, it just cannot mirror presence outward.
     }
-  }, [hostOwnsPresence, hostOrigin, status, peers]);
+  }, [hostOwnsPresence, hostOrigin, status, peers, unsyncedChanges]);
 
   // Let the host flip the surface read-only (or back) at runtime, without a
   // reload. A generic embedding hook: any host can post
@@ -1868,6 +1871,11 @@ function CollabApp({
     [commentsMap]
   );
   const [seed, setSeed] = useState<SeedState>({ kind: 'loading' });
+  // The host filled the room before issuing this session.
+  const hostPrepared = useMemo(
+    () => new URLSearchParams(window.location.search).get('prepared') === '1',
+    []
+  );
   // Guards the one-shot below against React re-runs. Not state: flipping
   // it must not re-render, and it must be read synchronously.
   const seedAppliedRef = useRef(false);
@@ -1995,6 +2003,13 @@ function CollabApp({
   useEffect(() => {
     if (seed.kind !== 'ready' || status !== 'connected' || seedAppliedRef.current) return;
 
+    // A host can fill the room on the server before anyone connects, and then an
+    // empty room is an empty document: this client must not add anything to it.
+    if (hostPrepared) {
+      seedAppliedRef.current = true;
+      return;
+    }
+
     // Captured up front so the narrowing survives into the async body.
     const parsedSeed = seed.doc;
     let cancelled = false;
@@ -2103,12 +2118,15 @@ function CollabApp({
     [peers, status]
   );
 
-  if (seed.kind === 'loading') {
-    return <LoadingPanel />;
-  }
-
   if (seed.kind === 'error') {
     return <ErrorPanel error={seed.message} onRetry={() => setAttempt((n) => n + 1)} />;
+  }
+
+  // Not before the room has arrived, if it is known to hold the document. An editor
+  // bound to a Y.Doc that has not synced yet sees an empty fragment and publishes its
+  // own starting paragraph, so every open would add an empty paragraph to the document.
+  if (seed.kind === 'loading' || (hostPrepared && !hasSynced)) {
+    return <LoadingPanel />;
   }
 
   return (

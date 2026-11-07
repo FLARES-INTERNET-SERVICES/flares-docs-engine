@@ -4,6 +4,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import * as Y from 'yjs';
 import type { RoomRegistry } from './rooms.js';
 import type { DocStorage } from './storage.js';
+import { RoomKeeper, RoomStorageUnavailable, type WriteBarrier } from './room-keeper.js';
 import type { ShareLinkRole } from './auth/personal.js';
 import { resolveJoinRole } from './auth/join-role.js';
 import {
@@ -30,6 +31,8 @@ export type AttachHocuspocusOptions = {
   editorSessions?: { secret: string; ledger: SessionLedger } | null;
 };
 
+export type WriteBarrierReport = WriteBarrier & { flushed: number; flushFailed: number };
+
 /**
  * Wire Hocuspocus to a Node http server. Hocuspocus owns the Yjs sync
  * protocol; we hook lifecycle callbacks into our RoomRegistry (accounting)
@@ -42,9 +45,17 @@ export function attachHocuspocus(
   storage: DocStorage,
   pathPrefix = '/yjs',
   options: AttachHocuspocusOptions = {},
-): { hocuspocus: Hocuspocus; close: () => Promise<void> } {
+): {
+  hocuspocus: Hocuspocus;
+  keeper: RoomKeeper;
+  pauseWrites: () => Promise<WriteBarrierReport>;
+  resumeWrites: () => Promise<void>;
+  close: () => Promise<void>;
+} {
   const resolveLinkRole = options.resolveLinkRole ?? null;
   const editorSessions = options.editorSessions ?? null;
+  // Assigned just below: it needs the Hocuspocus instance, whose hooks need it.
+  let keeper: RoomKeeper;
   // Which socket a request belongs to: a refused client gets its socket closed,
   // and Hocuspocus's auth hook is handed the request rather than the socket.
   const socketsByRequest = new WeakMap<IncomingMessage, WebSocket>();
@@ -64,6 +75,7 @@ export function attachHocuspocus(
     if (existing) clearTimeout(existing.timer);
     const flush = async () => {
       pendingSaves.delete(name);
+      if (keeper.isDeleted(name)) return;
       try {
         const update = Y.encodeStateAsUpdate(doc);
         await storage.save(name, update);
@@ -77,14 +89,21 @@ export function attachHocuspocus(
 
   const hocuspocus = new Hocuspocus({
     name: 'casual-collab',
-    async onLoadDocument({ documentName, document }) {
+    async onLoadDocument({ documentName, document, context }) {
       // 1) If the room was pre-seeded via /api/rooms (xlsx upload path),
       //    apply that first.
       const room = rooms.get(documentName);
       if (room?.seed) Y.applyUpdate(document, room.seed);
       // 2) Restore the latest persisted state from the storage backend.
-      const persisted = await storage.load(documentName);
+      const persisted = editorSessions ? await keeper.load(documentName) : await storage.load(documentName);
       if (persisted) Y.applyUpdate(document, persisted);
+      // Checked at the door, in onAuthenticate, and checked again here because the
+      // stored state can run out between the two. Carrying on would hand this socket
+      // an empty document it would take for the real one.
+      if (editorSessions && !persisted) {
+        (context as { refuse?: () => void } | undefined)?.refuse?.();
+        throw new Error('no_state');
+      }
       return document;
     },
     /**
@@ -118,22 +137,39 @@ export function attachHocuspocus(
         try {
           const claims = verifyEditorSession(sessionToken, documentName, editorSessions.secret);
 
+          // Since this process started, nobody has said what has been taken back.
+          if (!editorSessions.ledger.isSynced()) {
+            throw new EditorSessionRefused('not_synced');
+          }
+
           if (editorSessions.ledger.isRevoked(claims.sid)) {
             throw new EditorSessionRefused('revoked');
           }
 
-          connection.readOnly = claims.perm !== 'edit';
+          if (keeper.isDeleted(documentName)) {
+            throw new EditorSessionRefused('room_deleted');
+          }
 
-          return { role: claims.perm === 'edit' ? 'write' : 'view', via: 'editor-session' as const, session: claims };
+          // The host fills a room before issuing a session for it. If nothing is
+          // here, it is not this socket's job to start an empty one.
+          if (!(await keeper.hasState(documentName))) {
+            throw new EditorSessionRefused('no_state');
+          }
+
+          connection.readOnly = keeper.writesPaused || claims.perm !== 'edit';
+
+          return {
+            role: claims.perm === 'edit' ? 'write' : 'view',
+            via: 'editor-session' as const,
+            session: claims,
+            refuse: () => closeRefused(request),
+          };
         } catch (err) {
-          const why = err instanceof EditorSessionRefused ? err.why : 'unknown';
+          const why = err instanceof EditorSessionRefused
+            ? err.why
+            : err instanceof RoomStorageUnavailable ? 'storage_unavailable' : 'unknown';
           console.warn(`[hocuspocus] refused a connection to ${documentName}: ${why}`);
-          // Messages from an unauthenticated socket queue up in memory, and it
-          // cannot try again on this socket anyway, so there is no reason to keep
-          // it. After a moment, so the permission-denied frame arrives first.
-          const socket = socketsByRequest.get(request);
-          const closing = setTimeout(() => socket?.close(SESSION_REFUSED_CLOSE.code, SESSION_REFUSED_CLOSE.reason), 100);
-          closing.unref?.();
+          closeRefused(request);
           // A plain error: the client learns only that it was refused.
           throw new Error('refused');
         }
@@ -172,6 +208,16 @@ export function attachHocuspocus(
       // role so logs / metrics can attribute writes correctly.
       return { role: role === 'view' ? 'view' : 'write' };
     },
+    /**
+     * The one place every message from every socket passes, already connected or not.
+     * Worked out afresh each time, so a barrier reaches sockets that were writing when it
+     * began, and a session goes back to what its token says when it ends.
+     */
+    async beforeHandleMessage({ connection, context }) {
+      if (editorSessions) {
+        connection.readOnly = keeper.writesPaused || (context as { session?: EditorSessionClaims }).session?.perm !== 'edit';
+      }
+    },
     async onChange({ documentName, document }) {
       queueSave(documentName, document as Y.Doc);
     },
@@ -205,7 +251,7 @@ export function attachHocuspocus(
         if (pending) {
           clearTimeout(pending.timer);
           await pending.flush();
-        } else if (document) {
+        } else if (document && !keeper.isDeleted(documentName)) {
           try {
             await storage.save(documentName, Y.encodeStateAsUpdate(document as Y.Doc));
           } catch (err) {
@@ -215,6 +261,86 @@ export function attachHocuspocus(
       }
     },
   });
+
+  // Messages from a refused socket queue up in memory, and it cannot try again on
+  // this socket anyway, so there is no reason to keep it. After a moment, so the
+  // permission-denied frame arrives first.
+  const closeRefused = (request: IncomingMessage) => {
+    const socket = socketsByRequest.get(request);
+    const closing = setTimeout(() => socket?.close(SESSION_REFUSED_CLOSE.code, SESSION_REFUSED_CLOSE.reason), 100);
+    closing.unref?.();
+  };
+
+  keeper = new RoomKeeper(
+    storage,
+    async (room) => {
+      // A document still loading is an empty one that is about to hold something.
+      await hocuspocus.loadingDocuments.get(room)?.catch(() => undefined);
+
+      return hocuspocus.documents.get(room);
+    },
+    async (room) => {
+      hocuspocus.closeConnections(room);
+      const document = hocuspocus.documents.get(room);
+      if (document) {
+        await hocuspocus.unloadDocument(document);
+      }
+    },
+  );
+
+  if (editorSessions) {
+    void keeper.restoreBarrier();
+  }
+
+  /**
+   * Refuse every write from now on, then put everything already accepted in the store.
+   *
+   * An edit is acknowledged only once it is in the open document, and the host reads
+   * open documents directly. So every acknowledged edit is in what the host reads after
+   * this returns, and everything later is refused, and the sender is told it was.
+   */
+  const pauseWrites = async (): Promise<WriteBarrierReport> => {
+    const barrier = await keeper.pauseWrites();
+
+    // A message that passed the check just before it changed lands on this turn.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    for (const [name, pending] of pendingSaves) {
+      clearTimeout(pending.timer);
+      pendingSaves.delete(name);
+    }
+
+    let flushed = 0;
+    let flushFailed = 0;
+
+    for (const [name, document] of hocuspocus.documents) {
+      if (keeper.isDeleted(name)) {
+        continue;
+      }
+
+      try {
+        await keeper.storeNow(name, Y.encodeStateAsUpdate(document));
+        flushed++;
+      } catch (err) {
+        flushFailed++;
+        console.warn('[hocuspocus] could not store a room behind a write barrier', name, err);
+      }
+    }
+
+    return { ...barrier, flushed, flushFailed };
+  };
+
+  /**
+   * Allow writes again, and make everyone reconnect.
+   *
+   * A client whose update was refused has a gap in its history here. Its next update
+   * would be acknowledged and then left waiting for the part that was refused. Connecting
+   * again is what makes it send everything this side is missing.
+   */
+  const resumeWrites = async (): Promise<void> => {
+    await keeper.resumeWrites();
+    hocuspocus.closeConnections();
+  };
 
   // Fastify's WebSocket plugin would also work but we keep dependencies
   // minimal — raw ws + manual upgrade routing.
@@ -274,7 +400,11 @@ export function attachHocuspocus(
 
   return {
     hocuspocus,
+    keeper,
+    pauseWrites,
+    resumeWrites,
     close: async () => {
+      keeper.stopRestoringBarrier();
       // Drain any pending debounced saves before we tear down — run each save
       // now instead of cancelling it, so the last <500 ms of edits per room
       // survive a SIGTERM / deploy restart.

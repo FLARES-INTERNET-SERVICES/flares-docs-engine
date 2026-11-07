@@ -62,10 +62,9 @@ export class RoomCapacityError extends Error {
 export class RoomRegistry {
   private rooms = new Map<string, RoomState>();
   private gc: ReturnType<typeof setInterval> | null = null;
-  /** Optional hook called when a room is evicted — used by the server
-   *  to also drop the persisted Y.Doc from the storage backend so
-   *  Redis doesn't keep stale blobs around for rooms the in-memory
-   *  registry has forgotten. */
+  /** Optional hook called when a room is forgotten here. Not a place to delete
+   *  what is stored: this registry is rebuilt from nothing on every restart, so
+   *  being forgotten by it says nothing about whether a document still matters. */
   private onEvict: ((roomId: string) => void) | null = null;
 
   start(onEvict?: (roomId: string) => void): void {

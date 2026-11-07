@@ -70,11 +70,26 @@ export function reportRoomState(update: Uint8Array | null, known?: string): Room
       fingerprint,
       state: Buffer.from(update).toString('base64'),
       vector: Buffer.from(Y.encodeStateVector(copy)).toString('base64'),
-      // 'prosemirror' is the fragment ySyncPlugin binds to.
-      hasContent: (
-        copy.getXmlFragment('prosemirror').toArray() as Array<Y.XmlElement | Y.XmlText | Y.XmlHook>
-      ).some(holdsContent),
+      hasContent: docHoldsContent(copy),
     };
+  } finally {
+    copy.destroy();
+  }
+}
+
+function docHoldsContent(doc: Y.Doc): boolean {
+  // 'prosemirror' is the fragment ySyncPlugin binds to.
+  return (doc.getXmlFragment('prosemirror').toArray() as Array<Y.XmlElement | Y.XmlText | Y.XmlHook>).some(holdsContent);
+}
+
+/** Does this encoded state hold anything a person put there? */
+export function roomStateHoldsContent(update: Uint8Array): boolean {
+  const copy = new Y.Doc();
+
+  try {
+    Y.applyUpdate(copy, update);
+
+    return docHoldsContent(copy);
   } finally {
     copy.destroy();
   }

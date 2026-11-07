@@ -30,7 +30,11 @@ export type EditorSessionRefusal =
   | 'expired'
   | 'malformed'
   | 'wrong_room'
-  | 'revoked';
+  | 'revoked'
+  | 'not_synced'
+  | 'room_deleted'
+  | 'no_state'
+  | 'storage_unavailable';
 
 export class EditorSessionRefused extends Error {
   constructor(public readonly why: EditorSessionRefusal) {
@@ -130,15 +134,23 @@ const LONGEST_TIMER_MS = 2 ** 31 - 1;
 /**
  * Which sessions have live sockets, and which have been taken back.
  *
- * Held in memory, so a restart forgets revocations. A revoked token is only good
- * until its own expiry, and the host sends its revoked sessions again every time
- * it reconciles them, so the gap is bounded by that interval.
+ * Held in memory, so a restart forgets revocations. So until the host has told this
+ * process what it has taken back, every session is refused, however good its token
+ * looks. Someone with access is barely held up: a refused editor asks the host for
+ * a new session, and issuing one sends the list. Someone without access never gets
+ * the moment after a restart when their old token would have worked again.
  */
 export class SessionLedger {
   private revoked = new Map<string, number>();
   private live = new Map<string, LiveConnection>();
+  private synced = false;
 
   constructor(private readonly now: () => number = () => Date.now()) {}
+
+  /** Has the host told this process what it has taken back, since it started? */
+  isSynced(): boolean {
+    return this.synced;
+  }
 
   isRevoked(sid: string): boolean {
     this.forgetExpired();
@@ -187,13 +199,16 @@ export class SessionLedger {
   /**
    * Take sessions back, closing any of their live sockets.
    *
-   * Idempotent, because the host repeats itself. `exp` is how long the refusal has
-   * to last: after that, the token fails on its own.
+   * Idempotent, because the host repeats itself, and it always sends all of them,
+   * possibly none. `exp` is how long the refusal has to last: after that, the token
+   * fails on its own.
    *
    * @returns how many connections were closed
    */
   revoke(sessions: ReadonlyArray<{ sid: string; exp: number }>): number {
     let closed = 0;
+
+    this.synced = true;
 
     for (const { sid, exp } of sessions) {
       this.revoked.set(sid, exp);

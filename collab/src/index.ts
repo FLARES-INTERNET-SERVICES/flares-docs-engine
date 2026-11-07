@@ -16,8 +16,8 @@ import { registerWopiRoutes } from './wopi.js';
 import { timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { reportRoomState } from './room-state.js';
+import { RoomDeleted, RoomStorageUnavailable, RoomWritesPaused } from './room-keeper.js';
 import { SessionLedger, editorSessionSecretFromEnv, parseRevocations } from './auth/editor-session.js';
-import * as Y from 'yjs';
 import { AdminConfigStore } from './admin/config.js';
 import { registerAdminRoutes } from './admin/routes.js';
 import { WebhookDispatcher } from './admin/webhooks.js';
@@ -164,11 +164,8 @@ if (!editorSessionSecret) {
   app.log.warn('editor sessions are not enforced (OFFICE_SIGNING_SECRET is unset): any client may write to any room');
 }
 
-// Persistence backend created first so the room registry can use it
-// as the eviction callback — when a room is GC'd, we also drop its
-// persisted Y.Doc bytes so Redis doesn't accumulate orphans the
-// in-memory registry has forgotten about.
-const storage = await createStorage();
+// With a host in charge, work it has not read yet must outlast any fixed expiry.
+const storage = await createStorage({ keepUntilConfirmed: editorSessionSecret !== null });
 app.log.info(
   `doc storage: ${process.env.REDIS_URL ? `redis (${process.env.REDIS_URL})` : 'in-memory'}`,
 );
@@ -204,15 +201,14 @@ void webhooks;
 // Room registry created BEFORE the personal-mode routes so the share-link
 // route can validate that a minted token's `roomId` refers to a live room
 // (sharing-model §6.1 — tokens are bound to a specific room at mint time).
+//
+// Being forgotten here touches nothing that is stored. This registry starts empty on
+// every restart, so it cannot tell a throwaway room from someone's document, and
+// deleting what it has lost track of is how an idle document used to disappear 60
+// minutes after a restart. Stored state goes when its document is deleted, or when
+// Redis expires it: see RedisStorage.
 const rooms = new RoomRegistry();
-rooms.start((evictedId) => {
-  // Fire-and-forget — storage.delete is best-effort, a failure just
-  // means the blob waits out Redis's 7-day TTL. We don't want a
-  // backend hiccup to stall the GC loop.
-  storage.delete(evictedId).catch((err) => {
-    app.log.warn({ err, roomId: evictedId }, 'storage delete failed for evicted room');
-  });
-});
+rooms.start();
 app.addHook('onClose', async () => rooms.stop());
 
 // Personal-mode auth store + routes. Off by default (`mode='none'`),
@@ -308,6 +304,45 @@ function refuseWithoutServiceCredential(req: FastifyRequest, reply: FastifyReply
 }
 
 /**
+ * With a host in charge, `/api/rooms*` is for the host.
+ *
+ * These routes were written for anonymous rooms, where only a room's creator knows
+ * its id. Here a room id is in a URL in someone's browser history, and anyone who could
+ * reach these could create rooms, pin uploads in memory, and read an uploaded seed. A
+ * browser has no reason to call them: Flares serves the starting file itself and fills
+ * rooms through /internal. A proxy not routing them is one defence, and this is another.
+ */
+if (editorSessionSecret) {
+  app.addHook('onRequest', async (req, reply) => {
+    const path = req.url.split('?')[0] ?? '';
+
+    if (path === '/api/rooms' || path.startsWith('/api/rooms/')) {
+      const refused = refuseWithoutServiceCredential(req, reply);
+
+      if (refused) {
+        return refused;
+      }
+    }
+  });
+}
+
+/**
+ * The conversions between .docx and Yjs.
+ *
+ * Imported by absolute path, and lazily, so Node resolves the editor's ProseMirror
+ * stack from the editor's own tree. Two copies of prosemirror-model in one process
+ * cannot exchange documents, and a linked package brings its own. Lazy also keeps
+ * the editor out of the startup path: a deployment that never converts never loads it.
+ */
+function loadEditorScript() {
+  const modulePath =
+    process.env.CASUAL_SERIALIZER_PATH ??
+    resolve(here, '../../docx-editor/scripts/serialize-ydoc.mts');
+
+  return import(pathToFileURL(modulePath).href) as Promise<typeof import('../../docx-editor/scripts/serialize-ydoc.mjs')>;
+}
+
+/**
  * Convert a Yjs document to .docx, for a trusted server-side caller.
  *
  * A host application owns the canonical file and needs bytes to store a
@@ -335,18 +370,7 @@ app.post<{ Body: { state?: string; name?: string; base?: string } }>(
     }
 
     try {
-      // Imported by absolute path, and lazily, so Node resolves the editor's
-      // ProseMirror stack from the editor's own tree. Two copies of
-      // prosemirror-model in one process cannot exchange documents, and a
-      // linked package brings its own. Lazy also keeps the editor out of the
-      // startup path: a deployment that never serializes never loads it.
-      const modulePath =
-        process.env.CASUAL_SERIALIZER_PATH ??
-        resolve(here, '../../docx-editor/scripts/serialize-ydoc.mts');
-
-      const { serializeYDocToDocx } = (await import(
-        pathToFileURL(modulePath).href
-      )) as typeof import('../../docx-editor/scripts/serialize-ydoc.mjs');
+      const { serializeYDocToDocx } = await loadEditorScript();
 
       const docx = await serializeYDocToDocx({
         state: new Uint8Array(Buffer.from(state, 'base64')),
@@ -390,17 +414,165 @@ app.get<{ Params: { id: string }; Querystring: { known?: string } }>(
     }
 
     try {
-      const live = hocus.hocuspocus.documents.get(req.params.id);
-      const update = live ? Y.encodeStateAsUpdate(live) : await storage.load(req.params.id);
+      const report = reportRoomState(await hocus.keeper.read(req.params.id), req.query.known);
 
-      return reportRoomState(update, req.query.known);
+      // Only a caller that holds these same bytes can name their fingerprint, so
+      // this is the host saying it has a durable copy. Not worth failing a read over.
+      if (report.exists && report.unchanged) {
+        storage.confirmDurable(req.params.id).catch((err) => {
+          req.log.warn({ err }, 'could not start the expiry of a stored room');
+        });
+      }
+
+      return report;
     } catch (err) {
       req.log.error({ err }, 'internal/rooms/state failed');
 
-      return reply.code(500).send({ error: 'state_unavailable' });
+      return err instanceof RoomStorageUnavailable
+        ? reply.code(503).send({ error: 'storage_unavailable' })
+        : reply.code(500).send({ error: 'state_unavailable' });
     }
   },
 );
+
+/**
+ * Make sure a room holds a document before anyone connects to it, for a trusted
+ * server-side caller. See RoomKeeper.prepare() for what this will and will not do.
+ *
+ * `state` is the host's durable copy. `docx` is a file to start from, used only if
+ * the room holds no content, and converted here because the conversion lives in the
+ * editor's TypeScript. Doing this before anyone connects is what lets every socket
+ * be refused from an empty room, and lets a viewer who arrives first see the document
+ * rather than a blank page they cannot fill.
+ */
+app.post<{ Params: { id: string }; Body: { state?: unknown; docx?: unknown; known?: unknown } }>(
+  '/internal/rooms/:id/prepare',
+  async (req, reply) => {
+    const refused = refuseWithoutServiceCredential(req, reply);
+
+    if (refused) {
+      return refused;
+    }
+
+    const { state, docx, known } = req.body ?? {};
+
+    if (
+      (state !== undefined && (typeof state !== 'string' || state === '')) ||
+      (docx !== undefined && (typeof docx !== 'string' || docx === '')) ||
+      (known !== undefined && typeof known !== 'string')
+    ) {
+      return reply.code(400).send({ error: 'invalid_prepare' });
+    }
+
+    try {
+      return await hocus.keeper.prepare(req.params.id, {
+        state: typeof state === 'string' ? new Uint8Array(Buffer.from(state, 'base64')) : undefined,
+        known: typeof known === 'string' ? known : undefined,
+        seed: typeof docx === 'string'
+          ? async () => {
+              const { docxToYDocState } = await loadEditorScript();
+
+              return docxToYDocState(new Uint8Array(Buffer.from(docx, 'base64')));
+            }
+          : undefined,
+      });
+    } catch (err) {
+      if (err instanceof RoomDeleted) {
+        return reply.code(410).send({ error: 'room_deleted' });
+      }
+
+      if (err instanceof RoomWritesPaused) {
+        return reply.code(503).send({ error: 'writes_paused' });
+      }
+
+      if (err instanceof RoomStorageUnavailable) {
+        req.log.error({ err }, 'internal/rooms/prepare: storage unavailable');
+
+        return reply.code(503).send({ error: 'storage_unavailable' });
+      }
+
+      // A state that does not decode, or a file that does not convert. Either way
+      // the room was left as it was, and the caller must not treat it as prepared.
+      req.log.error({ err }, 'internal/rooms/prepare failed');
+
+      return reply.code(422).send({ error: 'unusable_document' });
+    }
+  },
+);
+
+/**
+ * Remove a deleted document's room, for a trusted server-side caller.
+ *
+ * The only way stored state is deleted. Sockets close, and because nothing is then
+ * stored, no token issued for this room can open it again. Safe to repeat.
+ */
+app.delete<{ Params: { id: string } }>('/internal/rooms/:id', async (req, reply) => {
+  const refused = refuseWithoutServiceCredential(req, reply);
+
+  if (refused) {
+    return refused;
+  }
+
+  try {
+    await hocus.keeper.remove(req.params.id);
+
+    return { deleted: true };
+  } catch (err) {
+    req.log.error({ err }, 'internal/rooms delete failed');
+
+    return reply.code(503).send({ error: 'storage_unavailable' });
+  }
+});
+
+/**
+ * Stop every document changing, for a trusted server-side caller about to take a final
+ * copy of everything. Only with a host in charge: without one there is nobody to take it.
+ *
+ * `{ "active": true }` starts it and stores what has been accepted so far; repeating that
+ * keeps the same barrier. `{ "active": false }` ends it. The routes a host saves with stay
+ * available throughout, and the barrier outlasts a restart of this service.
+ */
+app.get('/internal/write-barrier', async (req, reply) => {
+  const refused = refuseWithoutServiceCredential(req, reply);
+
+  if (refused) {
+    return refused;
+  }
+
+  const barrier = hocus.keeper.writeBarrier;
+
+  return barrier ? { active: true, ...barrier } : { active: false };
+});
+
+app.post<{ Body: { active?: unknown } }>('/internal/write-barrier', async (req, reply) => {
+  const refused = refuseWithoutServiceCredential(req, reply);
+
+  if (refused) {
+    return refused;
+  }
+
+  if (!editorSessionSecret) {
+    return reply.code(409).send({ error: 'no_host' });
+  }
+
+  if (typeof req.body?.active !== 'boolean') {
+    return reply.code(400).send({ error: 'invalid_barrier' });
+  }
+
+  try {
+    if (req.body.active) {
+      return { active: true, ...(await hocus.pauseWrites()) };
+    }
+
+    await hocus.resumeWrites();
+
+    return { active: false };
+  } catch (err) {
+    req.log.error({ err }, 'internal/write-barrier failed');
+
+    return reply.code(503).send({ error: 'storage_unavailable' });
+  }
+});
 
 /**
  * Take editor sessions back, for a trusted server-side caller.
