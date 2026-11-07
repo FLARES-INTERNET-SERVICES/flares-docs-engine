@@ -11,7 +11,7 @@ revision inside app image `casualoffice/docs@sha256:0f9892411476f45a…`
 
 **Tagged:** `0.0.5-flares.1`.
 
-**Totals:** 20 patches.
+**Totals:** 21 patches.
 
 | | Files | +/− |
 | --- | --- | --- |
@@ -50,6 +50,7 @@ ProseMirror schema and the layout engine are untouched.
 | **P018** | Open a document read-only from the URL | editor package | 1 | +12 / −1 | yes |
 | **P019** | Toggle read-only from the host at runtime | editor package | 1 | +24 / −4 | yes |
 | **P020** | Runtime read-only did not take effect | editor core | 1 | +14 / −4 | yes, strongly |
+| **P021** | A host could not read a room, and exports lost lists and styles | collab server + editor scripts | 6 | +622 / −21 | yes |
 
 ---
 
@@ -528,6 +529,44 @@ editability. Read-only now takes effect the instant it changes.
 **If dropped:** any host toggling read-only at runtime (P019) is ignored — the
 document keeps accepting edits after being made read-only. A generic bug; the
 fix is not Flares-specific.
+
+---
+
+## P021 — A host could not read a room, and exports lost lists and styles
+
+**Where:** `collab/src/index.ts`, `collab/src/room-state.ts`,
+`docx-editor/scripts/serialize-ydoc.mts`, `docx-editor/scripts/complete-package.mts`
+
+**The problem.** `/internal/serialize` turns a room's state into a `.docx`, but a
+host has to supply that state and had no way to read it. The state lives only in
+this server's storage. So a host's stored file stayed whatever the room was seeded
+with, while the editor went on showing the typed text: a document downloaded blank.
+
+Serializing a state then produced a file that lost formatting in Word. The package
+writer preserves `numbering.xml` and `styles.xml` but never creates or extends
+them, while the toolbar's list buttons use numId 1 and 2 outright and the style
+picker offers Title and the headings regardless. Word treats a paragraph pointing
+at a missing definition as an ordinary paragraph, so bullets and titles vanished.
+
+**What it does.**
+
+- `GET /internal/rooms/:id/state`, with the shared service credential: the live
+  document if the room is open, storage if not. Reports `exists`, a `fingerprint`
+  (`?known=` answers "unchanged" without the bytes), the `state`, its `vector`, and
+  `hasContent`, because an untouched room is not an empty fragment: ySyncPlugin
+  publishes a starting paragraph the moment a client binds.
+- `completePackage()` adds what the body refers to and the file lacks: list
+  definitions, the picker's styles, and document defaults matching what the editor
+  draws. A file's own definitions always win.
+- `assertTextSurvived()` refuses to return a body with no text for a document with
+  text. Every step can succeed and still produce an empty body.
+
+**If dropped:** hosts cannot persist collaborative edits, and every list and title
+written in a document that did not already define them is lost on export.
+
+**Tests:** `collab/src/room-state.unit.test.ts`,
+`docx-editor/scripts/serialize-ydoc.test.mts`, and the host's end-to-end
+`tools/office-lab/casual-docs-repair/tests/docs-export.mjs`.
 
 ---
 

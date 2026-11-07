@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import staticPlugin from '@fastify/static';
@@ -15,6 +15,8 @@ import { fileFormat } from './host/format.js';
 import { registerWopiRoutes } from './wopi.js';
 import { timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { reportRoomState } from './room-state.js';
+import * as Y from 'yjs';
 import { AdminConfigStore } from './admin/config.js';
 import { registerAdminRoutes } from './admin/routes.js';
 import { WebhookDispatcher } from './admin/webhooks.js';
@@ -271,6 +273,32 @@ app.get('/health', async () => ({
 }));
 
 /**
+ * The check every `/internal/` route makes. Returns the reply if the request was
+ * refused, or null if the caller holds the shared service credential.
+ */
+function refuseWithoutServiceCredential(req: FastifyRequest, reply: FastifyReply): FastifyReply | null {
+  const expected = process.env.CASUAL_JWT_SECRET ?? '';
+
+  if (expected === '') {
+    // Refuse rather than accept everything: an unset secret must not read as
+    // "no authentication required".
+    req.log.error(`${req.url} called but CASUAL_JWT_SECRET is unset`);
+
+    return reply.code(503).send({ error: 'not_configured' });
+  }
+
+  const offered = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+
+  // Constant-time: a length-independent comparison here leaks the secret one
+  // character at a time to anything that can measure the response.
+  const ok =
+    offered.length === expected.length &&
+    timingSafeEqual(Buffer.from(offered), Buffer.from(expected));
+
+  return ok ? null : reply.code(401).send({ error: 'unauthorized' });
+}
+
+/**
  * Convert a Yjs document to .docx, for a trusted server-side caller.
  *
  * A host application owns the canonical file and needs bytes to store a
@@ -285,26 +313,10 @@ app.get('/health', async () => ({
 app.post<{ Body: { state?: string; name?: string; base?: string } }>(
   '/internal/serialize',
   async (req, reply) => {
-    const expected = process.env.CASUAL_JWT_SECRET ?? '';
+    const refused = refuseWithoutServiceCredential(req, reply);
 
-    if (expected === '') {
-      // Refuse rather than accept everything: an unset secret must not read as
-      // "no authentication required".
-      req.log.error('internal/serialize called but CASUAL_JWT_SECRET is unset');
-
-      return reply.code(503).send({ error: 'not_configured' });
-    }
-
-    const offered = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-
-    // Constant-time: a length-independent comparison here leaks the secret one
-    // character at a time to anything that can measure the response.
-    const ok =
-      offered.length === expected.length &&
-      timingSafeEqual(Buffer.from(offered), Buffer.from(expected));
-
-    if (!ok) {
-      return reply.code(401).send({ error: 'unauthorized' });
+    if (refused) {
+      return refused;
     }
 
     const state = typeof req.body?.state === 'string' ? req.body.state : '';
@@ -342,6 +354,41 @@ app.post<{ Body: { state?: string; name?: string; base?: string } }>(
       req.log.error({ err }, 'internal/serialize failed');
 
       return reply.code(500).send({ error: 'serialize_failed' });
+    }
+  },
+);
+
+/**
+ * The current state of a room, for a trusted server-side caller.
+ *
+ * A host application that owns the canonical file has to be able to read what
+ * people typed. Without this, `/internal/serialize` has nothing to convert: the
+ * state lives only here, and a host's stored file stays whatever it was when the
+ * room was created, while the editor goes on showing the typed text.
+ *
+ * Read from the live document when the room is open, so an edit made a moment
+ * ago is included rather than waiting on the debounced save, and from storage
+ * when it is not. `?known=` is the fingerprint the caller already holds, and
+ * makes asking repeatedly cheap.
+ */
+app.get<{ Params: { id: string }; Querystring: { known?: string } }>(
+  '/internal/rooms/:id/state',
+  async (req, reply) => {
+    const refused = refuseWithoutServiceCredential(req, reply);
+
+    if (refused) {
+      return refused;
+    }
+
+    try {
+      const live = hocus.hocuspocus.documents.get(req.params.id);
+      const update = live ? Y.encodeStateAsUpdate(live) : await storage.load(req.params.id);
+
+      return reportRoomState(update, req.query.known);
+    } catch (err) {
+      req.log.error({ err }, 'internal/rooms/state failed');
+
+      return reply.code(500).send({ error: 'state_unavailable' });
     }
   },
 );

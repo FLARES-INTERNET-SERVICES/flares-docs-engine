@@ -18,6 +18,7 @@ import * as Y from 'yjs';
 import { yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import { schema, fromProseDoc } from '@eigenpal/docx-core/prosemirror';
 import { repackDocx, createDocx, parseDocx } from '@eigenpal/docx-core/headless';
+import { assertTextSurvived, completePackage } from './complete-package.mts';
 
 export interface SerializeRequest {
   /** A Yjs update, as raw bytes. */
@@ -60,7 +61,11 @@ export async function serializeYDocToDocx(request: SerializeRequest): Promise<Ui
       ? await repackDocx(document)
       : await createDocx(document);
 
-    return new Uint8Array(packed);
+    const complete = await completePackage(new Uint8Array(packed), pmDoc);
+
+    await assertTextSurvived(complete, pmDoc);
+
+    return complete;
   } finally {
     // Per-request scratch. Left undestroyed, a serialize every few minutes per
     // open document is a slow leak.
