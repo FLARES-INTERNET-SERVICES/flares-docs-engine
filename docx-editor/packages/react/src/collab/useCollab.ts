@@ -61,6 +61,8 @@ export interface CollabState {
   aiEditingBy: string | null;
   /** The Yjs awareness instance — exposed for advanced consumers. */
   awareness: HocuspocusProvider['awareness'];
+  /** Connect again, using a fresh token. Unsaved local edits resync once connected. */
+  reconnect: () => void;
   /**
    * The room's Y.Doc. Exposed so a host can tell an EMPTY room from one
    * that already holds a document before deciding whether to seed it —
@@ -173,8 +175,12 @@ export interface UseCollabOptions {
   user: { name: string; color: string };
   /** Optional auth token for the server's onAuthenticate hook.
    *  Defaults to a truthy placeholder so the handshake completes even
-   *  when the server gates joins by role. */
-  token?: string;
+   *  when the server gates joins by role. Pass a function when the host renews
+   *  the token: it is asked on every connection, and it must be stable across
+   *  renders, because a new one rebuilds the Y.Doc and provider. */
+  token?: string | (() => string);
+  /** The server refused the token. No retry happens until `reconnect()`. */
+  onAuthenticationFailed?: () => void;
 }
 
 /**
@@ -183,7 +189,17 @@ export interface UseCollabOptions {
  * DocxEditor alongside the returned plugins so the editor's own
  * loader doesn't overwrite the Yjs-populated PM state.
  */
-export function useCollab({ room, backend, user, token }: UseCollabOptions): CollabState {
+export function useCollab({
+  room,
+  backend,
+  user,
+  token,
+  onAuthenticationFailed,
+}: UseCollabOptions): CollabState {
+  // Read through a ref: the provider is built once, and this callback changes.
+  const authFailedRef = useRef(onAuthenticationFailed);
+  authFailedRef.current = onAuthenticationFailed;
+
   const { ydoc, provider, plugins, metaMap, footnotesMap, endnotesMap, propsMap, commentsMap } =
     useMemo(() => {
       const ydoc = new Y.Doc();
@@ -196,6 +212,11 @@ export function useCollab({ room, backend, user, token }: UseCollabOptions): Col
         name: room,
         document: ydoc,
         token: token ?? 'anon',
+        onAuthenticationFailed: () => authFailedRef.current?.(),
+        // This provider has its socket to itself. With the default, a refusal
+        // detaches the document but leaves the socket trying to stay connected,
+        // and `reconnect()` then has nothing to reconnect through.
+        preserveConnection: false,
       });
       const fragment = ydoc.getXmlFragment('prosemirror');
       // Hocuspocus creates awareness by default; guard the type union so
@@ -329,6 +350,10 @@ export function useCollab({ room, backend, user, token }: UseCollabOptions): Col
     aiIsEditing,
     aiEditingBy,
     awareness: provider.awareness,
+    reconnect: () => {
+      provider.disconnect();
+      void provider.connect();
+    },
     ydoc,
     metaMap,
     footnotesMap,

@@ -6,6 +6,14 @@ import type { RoomRegistry } from './rooms.js';
 import type { DocStorage } from './storage.js';
 import type { ShareLinkRole } from './auth/personal.js';
 import { resolveJoinRole } from './auth/join-role.js';
+import {
+  EditorSessionRefused,
+  SESSION_ENDED_CLOSE,
+  SESSION_REFUSED_CLOSE,
+  verifyEditorSession,
+  type EditorSessionClaims,
+  type SessionLedger,
+} from './auth/editor-session.js';
 
 /** Resolve a share token to its persisted role/room/password, respecting
  *  expiry, or null. In production this is `PersonalAuthStore.getLinkRole`,
@@ -17,6 +25,9 @@ export type AttachHocuspocusOptions = {
   /** Wired only in personal mode. When absent, share tokens can't be
    *  validated, so a `?share=` join is rejected rather than trusted. */
   resolveLinkRole?: ResolveLinkRole | null;
+  /** Wired when a host signs editor sessions. Every connection must then present
+   *  a valid one: the anonymous and share-link paths below are not reachable. */
+  editorSessions?: { secret: string; ledger: SessionLedger } | null;
 };
 
 /**
@@ -33,6 +44,10 @@ export function attachHocuspocus(
   options: AttachHocuspocusOptions = {},
 ): { hocuspocus: Hocuspocus; close: () => Promise<void> } {
   const resolveLinkRole = options.resolveLinkRole ?? null;
+  const editorSessions = options.editorSessions ?? null;
+  // Which socket a request belongs to: a refused client gets its socket closed,
+  // and Hocuspocus's auth hook is handed the request rather than the socket.
+  const socketsByRequest = new WeakMap<IncomingMessage, WebSocket>();
   // Debounce per-room saves so a rapid burst of edits doesn't hammer Redis.
   // 500 ms feels right for "still feels live, doesn't write on every keystroke".
   const SAVE_DEBOUNCE_MS = 500;
@@ -98,7 +113,32 @@ export function attachHocuspocus(
      * password. Without a token we fall through to the EXACT legacy
      * anonymous behaviour below.
      */
-    async onAuthenticate({ requestParameters, connection, documentName }) {
+    async onAuthenticate({ token: sessionToken, request, requestParameters, connection, documentName }) {
+      if (editorSessions) {
+        try {
+          const claims = verifyEditorSession(sessionToken, documentName, editorSessions.secret);
+
+          if (editorSessions.ledger.isRevoked(claims.sid)) {
+            throw new EditorSessionRefused('revoked');
+          }
+
+          connection.readOnly = claims.perm !== 'edit';
+
+          return { role: claims.perm === 'edit' ? 'write' : 'view', via: 'editor-session' as const, session: claims };
+        } catch (err) {
+          const why = err instanceof EditorSessionRefused ? err.why : 'unknown';
+          console.warn(`[hocuspocus] refused a connection to ${documentName}: ${why}`);
+          // Messages from an unauthenticated socket queue up in memory, and it
+          // cannot try again on this socket anyway, so there is no reason to keep
+          // it. After a moment, so the permission-denied frame arrives first.
+          const socket = socketsByRequest.get(request);
+          const closing = setTimeout(() => socket?.close(SESSION_REFUSED_CLOSE.code, SESSION_REFUSED_CLOSE.reason), 100);
+          closing.unref?.();
+          // A plain error: the client learns only that it was refused.
+          throw new Error('refused');
+        }
+      }
+
       const token = requestParameters.get('share');
 
       const decision = resolveJoinRole({
@@ -136,9 +176,26 @@ export function attachHocuspocus(
       queueSave(documentName, document as Y.Doc);
     },
     async onConnect({ documentName }) {
-      rooms.onConnect(documentName);
+      // Runs before authentication. With sessions in force that is not yet someone
+      // who may be counted as in the room, nor allowed to create a registry entry.
+      if (!editorSessions) {
+        rooms.onConnect(documentName);
+      }
     },
-    async onDisconnect({ documentName, document, clientsCount }) {
+    async connected({ documentName, socketId, context, connectionInstance }) {
+      if (!editorSessions) {
+        return;
+      }
+
+      rooms.onConnect(documentName);
+      editorSessions.ledger.admit(
+        `${socketId}:${documentName}`,
+        (context as { session: EditorSessionClaims }).session,
+        () => connectionInstance.close(SESSION_ENDED_CLOSE),
+      );
+    },
+    async onDisconnect({ documentName, document, clientsCount, socketId }) {
+      editorSessions?.ledger.release(`${socketId}:${documentName}`);
       rooms.onDisconnect(documentName);
       // Snapshot-on-drain: when the last client leaves, run the room's pending
       // debounced save now rather than risking the doc being unloaded before
@@ -206,6 +263,7 @@ export function attachHocuspocus(
   httpServer.on('upgrade', onUpgrade);
 
   const handleConnection = (ws: WebSocket, req: IncomingMessage) => {
+    socketsByRequest.set(req, ws);
     // Hocuspocus expects (websocket, request, context). Context is optional
     // and we don't need auth tokens for anonymous rooms.
     hocuspocus.handleConnection(

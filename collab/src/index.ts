@@ -16,6 +16,7 @@ import { registerWopiRoutes } from './wopi.js';
 import { timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { reportRoomState } from './room-state.js';
+import { SessionLedger, editorSessionSecretFromEnv, parseRevocations } from './auth/editor-session.js';
 import * as Y from 'yjs';
 import { AdminConfigStore } from './admin/config.js';
 import { registerAdminRoutes } from './admin/routes.js';
@@ -153,6 +154,14 @@ if (servesWeb) {
   app.log.info(`serving built web app from ${webDist}`);
 } else {
   app.log.info(`web/dist not built — running API/WS only (mount a built SPA at web/dist to serve one)`);
+}
+
+// Room permissions. Read before anything else starts: in production, a missing
+// key must stop the server rather than leave every room open to every writer.
+const editorSessionSecret = editorSessionSecretFromEnv(process.env);
+const sessionLedger = new SessionLedger();
+if (!editorSessionSecret) {
+  app.log.warn('editor sessions are not enforced (OFFICE_SIGNING_SECRET is unset): any client may write to any room');
 }
 
 // Persistence backend created first so the room registry can use it
@@ -392,6 +401,30 @@ app.get<{ Params: { id: string }; Querystring: { known?: string } }>(
     }
   },
 );
+
+/**
+ * Take editor sessions back, for a trusted server-side caller.
+ *
+ * Only the host can tell that someone has lost access, so it says so here. Closing
+ * the socket is what makes that immediate; a client that still has access renews
+ * and reconnects with whatever permission it now holds. Repeating a request is
+ * harmless, and the host does, so a restart here does not forget for long.
+ */
+app.post('/internal/sessions/revoke', async (req, reply) => {
+  const refused = refuseWithoutServiceCredential(req, reply);
+
+  if (refused) {
+    return refused;
+  }
+
+  const sessions = parseRevocations(req.body);
+
+  if (sessions === null) {
+    return reply.code(400).send({ error: 'invalid_sessions' });
+  }
+
+  return { closed: sessionLedger.revoke(sessions) };
+});
 
 /**
  * Create a fresh room. Body is optional JSON `{ password?: string }`.
@@ -635,6 +668,7 @@ await app.listen({ port: PORT, host: HOST });
 // only the legacy `?role=` / room-password path applies.
 const personalAuthForCollab = personalAuth;
 const hocus = attachHocuspocus(app.server, rooms, storage, '/yjs', {
+  editorSessions: editorSessionSecret ? { secret: editorSessionSecret, ledger: sessionLedger } : null,
   resolveLinkRole: personalAuthForCollab
     ? (token) => personalAuthForCollab.getLinkRole(token)
     : null,

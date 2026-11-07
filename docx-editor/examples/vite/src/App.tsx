@@ -1689,7 +1689,32 @@ function CollabApp({
   onError,
   onFontsLoaded,
 }: CollabAppProps) {
-  const { plugins, status, peers, metaMap, ydoc, commentsMap } = useCollab({ room, backend, user });
+  // The host's session token. Kept in a ref because it changes on renewal, and
+  // the socket should pick up the new one on its next connection without the
+  // document being rebuilt around it.
+  const sessionTokenRef = useRef(new URLSearchParams(window.location.search).get('token'));
+  const getSessionToken = useCallback(() => sessionTokenRef.current ?? 'anon', []);
+  const refusedRef = useRef(false);
+  // What the current socket was opened with. A connection's permission is fixed
+  // when it opens, so holding a better token changes nothing until it reconnects.
+  const socketPermissionRef = useRef(
+    new URLSearchParams(window.location.search).get('mode') === 'viewing' ? 'view' : 'edit'
+  );
+
+  const { plugins, status, peers, metaMap, ydoc, commentsMap, reconnect } = useCollab({
+    room,
+    backend,
+    user,
+    token: getSessionToken,
+    onAuthenticationFailed: () => {
+      refusedRef.current = true;
+      // The token has expired or been taken back. Only the host can tell which,
+      // and get another if this person still has access.
+      if (hostOrigin && window.parent !== window) {
+        window.parent.postMessage({ type: 'casualoffice:authFailed' }, hostOrigin);
+      }
+    },
+  });
 
   // Read once: the host cannot change its mind mid-session, and re-reading
   // location on every render would be work for no reason.
@@ -1799,6 +1824,33 @@ function CollabApp({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
+  }, [hostOrigin]);
+
+  // A renewed session from the host. Unlike the message above, this one means
+  // nothing without a declared host: it replaces the credential the socket uses.
+  useEffect(() => {
+    function onSession(event: MessageEvent) {
+      if (!hostOrigin || event.origin !== hostOrigin) return;
+      const data = event.data as { type?: string; token?: unknown; permission?: unknown } | null;
+      if (!data || data.type !== 'flares:session' || typeof data.token !== 'string') return;
+      sessionTokenRef.current = data.token;
+      // Only ever downward. Going the other way is the host's call, through
+      // setEditable, and a routine renewal must not undo someone's own choice
+      // to switch to Viewing.
+      if (data.permission !== 'edit') {
+        setDocumentMode('viewing');
+      }
+      const permissionChanged = data.permission !== socketPermissionRef.current;
+      socketPermissionRef.current = data.permission === 'edit' ? 'edit' : 'view';
+      if (refusedRef.current || permissionChanged) {
+        refusedRef.current = false;
+        reconnect();
+      }
+    }
+    window.addEventListener('message', onSession);
+    return () => window.removeEventListener('message', onSession);
+    // `reconnect` closes over the provider, which is built once per room.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostOrigin]);
 
   // Comment threads ride a shared Y.Map of their own: the highlight marks

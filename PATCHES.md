@@ -11,7 +11,7 @@ revision inside app image `casualoffice/docs@sha256:0f9892411476f45a…`
 
 **Tagged:** `0.0.5-flares.1`.
 
-**Totals:** 21 patches.
+**Totals:** 22 patches.
 
 | | Files | +/− |
 | --- | --- | --- |
@@ -51,6 +51,7 @@ ProseMirror schema and the layout engine are untouched.
 | **P019** | Toggle read-only from the host at runtime | editor package | 1 | +24 / −4 | yes |
 | **P020** | Runtime read-only did not take effect | editor core | 1 | +14 / −4 | yes, strongly |
 | **P021** | A host could not read a room, and exports lost lists and styles | collab server + editor scripts | 6 | +622 / −21 | yes |
+| **P022** | Anyone with a room id could read and write it | collab server + editor | 7 | +1232 / −6 | yes |
 
 ---
 
@@ -569,6 +570,43 @@ written in a document that did not already define them is lost on export.
 `tools/office-lab/casual-docs-repair/tests/docs-export.mjs`.
 
 ---
+
+## P022 — Anyone with a room id could read and write it
+
+`onAuthenticate` took `?role=` from the client, and treated its absence as a writer.
+The editor sent a placeholder token that nothing looked at, so view-only existed
+only in the editor's interface. A room id was a capability, and it is in every
+connection the browser makes.
+
+A host that signs editor sessions sets `OFFICE_SIGNING_SECRET`, and every connection
+must then present a session for the room it is opening. The permission comes from the
+token and nothing else. A `view` session is a read-only connection, which Hocuspocus
+enforces on both sync step 2 and ordinary updates. Sockets end when their token does,
+and `POST /internal/sessions/revoke` ends them sooner. In production the server does
+not start without the key.
+
+- `collab/src/auth/editor-session.ts`: verifying sessions, and the ledger of live
+  and revoked ones
+- `collab/src/yjs.ts`: the check, and counting someone as in a room only once they are
+  authenticated, so a refused client cannot create registry entries
+- `collab/src/index.ts`: the key at startup, and the revoke route
+- `docx-editor/packages/react/src/collab/useCollab.ts`: a token that can be renewed,
+  a refusal callback, and `preserveConnection: false`
+- `docx-editor/examples/vite/src/App.tsx`: sends the host's token, and takes a renewed one
+
+Two things worth knowing before changing this. A refused socket is closed with 4403
+because Hocuspocus's client does not reconnect after that code: any other made a tab
+retry about twice a second indefinitely, including a tab left open across a deployment.
+And `preserveConnection` defaults to true, under which a refused provider detaches from
+a socket that goes on trying to connect.
+
+Tests: `collab/src/auth/editor-session.unit.test.ts`, and, against a real server over
+a real socket,
+`node --import tsx --test src/auth/editor-session.integration.test.ts`.
+Not in `npm test`, which runs unit tests only.
+
+**Upstream?** The mechanism is generic, but needs a host that signs sessions. Offer it
+as an option once it has run in production.
 
 ## Fork burden: **LOW**
 
