@@ -2652,6 +2652,10 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   const imageInputRef = useRef<HTMLInputElement>(null);
   const docxInputRef = useRef<HTMLInputElement>(null);
   const editorContentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    setState((previous) => ({ ...previous, zoom: initialZoom }));
+  }, [initialZoom]);
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Viewport-height column wrapping the scroll container. The version-preview
   // overlay is portaled here so its banner stays pinned to the viewport instead
@@ -9657,13 +9661,16 @@ body { background: white; }
   // which pushed the page into a left "lane" at medium widths and jammed the
   // ruler against the window's left corner instead of centering.
   const outlineLeftAllowance = showOutline ? OUTLINE_RESERVED_SPACE : 0;
-  const minLayoutWidth =
-    2 * outlineLeftAllowance + DEFAULT_PAGE_WIDTH + (sidebarOpen ? SIDEBAR_DOCUMENT_SHIFT * 2 : 0);
 
   const sectionPropsPageWidth = history.state?.package?.document?.finalSectionProperties?.pageWidth;
   const pageWidthPx = sectionPropsPageWidth
     ? Math.round(sectionPropsPageWidth / 15)
     : DEFAULT_PAGE_WIDTH;
+  // Reserve the displayed page width, not an unscaled desktop page on phones.
+  const minLayoutWidth =
+    2 * outlineLeftAllowance +
+    pageWidthPx * state.zoom +
+    (sidebarOpen ? SIDEBAR_DOCUMENT_SHIFT * 2 : 0);
 
   const resolvedCommentIds = useMemo(() => {
     const ids = new Set<number>();
@@ -9964,8 +9971,7 @@ body { background: white; }
                     the Tauri shell owns crash recovery via sidecar files and
                     shows its own restore UI. IndexedDB autosave is also
                     disabled on desktop (see onDesktop guard above). */}
-                  {!(window as { __deskApp__?: { isDesktop?: boolean } }).__deskApp__
-                    ?.isDesktop &&
+                  {!(window as { __deskApp__?: { isDesktop?: boolean } }).__deskApp__?.isDesktop &&
                     !recovery?.hostOwnsDurability && (
                       <AutosaveRestoreBanner
                         documentId={recovery?.documentId}

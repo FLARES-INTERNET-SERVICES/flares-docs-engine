@@ -9,7 +9,7 @@
  * Can be used standalone with props or within EditorToolbar (reads from context).
  */
 
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useId } from 'react';
 import { useTranslation } from '../i18n';
 import type { ReactNode } from 'react';
 import type { ColorValue, ParagraphAlignment } from '@eigenpal/docx-core/types/document';
@@ -348,392 +348,412 @@ export function FormattingBar(explicitProps: FormattingBarProps) {
     [onRefocusEditor]
   );
 
+  const [toolsExpanded, setToolsExpanded] = useState(false);
+  const toolsId = useId();
+
   // ── Render ────────────────────────────────────────────────────────────
 
   return (
-    <div
-      ref={barRef}
-      className={cn(
-        !inline &&
-          'flex items-center px-2 py-1 bg-[color:var(--doc-bg-subtle,#f1f5f9)] text-[color:var(--doc-text-on-surface,#1f2937)] rounded-full min-h-[36px] overflow-x-auto mx-2 mb-1',
-        className
+    <>
+      {!inline && (
+        <button
+          type="button"
+          className="flares-format-toggle"
+          aria-expanded={toolsExpanded}
+          aria-controls={toolsId}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => setToolsExpanded((value) => !value)}
+        >
+          <MaterialSymbol name="text_format" size={20} />
+          Formatting <span aria-hidden="true">{toolsExpanded ? '−' : '+'}</span>
+        </button>
       )}
-      style={inline ? { display: 'contents', ...style } : style}
-      role={inline ? undefined : 'toolbar'}
-      aria-label={inline ? undefined : t('toolbar.ariaLabel')}
-      data-testid={inline ? undefined : 'formatting-bar'}
-      onMouseDown={inline ? undefined : handleBarMouseDown}
-      onMouseUp={inline ? undefined : handleBarMouseUp}
-    >
-      {/* Undo/Redo Group */}
-      <ToolbarGroup label={t('formattingBar.groups.history')}>
-        <ToolbarButton
-          onClick={handleUndo}
-          disabled={disabled || !canUndo}
-          title={t('formattingBar.undo')}
-          shortcut="⌘Z"
-          ariaLabel={t('formattingBar.undo')}
-        >
-          <MaterialSymbol name="undo" size={ICON_SIZE} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={handleRedo}
-          disabled={disabled || !canRedo}
-          title={t('formattingBar.redo')}
-          shortcut="⌘Y"
-          ariaLabel={t('formattingBar.redo')}
-        >
-          <MaterialSymbol name="redo" size={ICON_SIZE} />
-        </ToolbarButton>
-        {onPaintFormat && !tableContext?.isInTable && (
-          <ToolbarButton
-            onClick={onPaintFormat}
-            disabled={disabled}
-            title={t('formattingBar.paintFormat')}
-            ariaLabel={t('formattingBar.paintFormat')}
-            active={!!paintFormatArmed}
-            featureId="paintFormat"
-          >
-            <MaterialSymbol name="format_paint" size={ICON_SIZE} />
-          </ToolbarButton>
+      <div
+        id={toolsId}
+        data-expanded={toolsExpanded}
+        ref={barRef}
+        className={cn(
+          !inline &&
+            'flex items-center px-2 py-1 bg-[color:var(--doc-bg-subtle,#f1f5f9)] text-[color:var(--doc-text-on-surface,#1f2937)] rounded-full min-h-[36px] overflow-x-auto mx-2 mb-1',
+          className
         )}
-      </ToolbarGroup>
-
-      {/* Zoom Control */}
-      {showZoomControl && (
-        <ToolbarGroup label={t('formattingBar.groups.zoom')}>
-          <ZoomControl
-            value={zoom}
-            onChange={onZoomChange}
-            minZoom={0.5}
-            maxZoom={2}
-            disabled={disabled}
-            compact
-            showButtons={false}
-          />
-        </ToolbarGroup>
-      )}
-
-      {/* Style Picker */}
-      {showStylePicker && (
-        <ToolbarGroup label={t('formattingBar.groups.styles')}>
-          <StylePicker
-            value={currentFormatting.styleId || 'Normal'}
-            onChange={handleStyleChange}
-            styles={documentStyles}
-            theme={theme}
-            disabled={disabled}
-            width={120}
-          />
-        </ToolbarGroup>
-      )}
-
-      {/* Font Family and Size Pickers */}
-      {(showFontPicker || showFontSizePicker) && (
-        <ToolbarGroup label={t('formattingBar.groups.font')}>
-          {showFontPicker && (
-            <FontPicker
-              value={currentFormatting.fontFamily || 'Arial'}
-              onChange={handleFontFamilyChange}
-              fonts={normalizedFonts}
+        style={inline ? { display: 'contents', ...style } : style}
+        role={inline ? undefined : 'toolbar'}
+        aria-label={inline ? undefined : t('toolbar.ariaLabel')}
+        data-testid={inline ? undefined : 'formatting-bar'}
+        onMouseDown={inline ? undefined : handleBarMouseDown}
+        onMouseUp={inline ? undefined : handleBarMouseUp}
+      >
+        {/* Undo/Redo Group */}
+        <ToolbarGroup label={t('formattingBar.groups.history')}>
+          <ToolbarButton
+            onClick={handleUndo}
+            disabled={disabled || !canUndo}
+            title={t('formattingBar.undo')}
+            shortcut="⌘Z"
+            ariaLabel={t('formattingBar.undo')}
+          >
+            <MaterialSymbol name="undo" size={ICON_SIZE} />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={handleRedo}
+            disabled={disabled || !canRedo}
+            title={t('formattingBar.redo')}
+            shortcut="⌘Y"
+            ariaLabel={t('formattingBar.redo')}
+          >
+            <MaterialSymbol name="redo" size={ICON_SIZE} />
+          </ToolbarButton>
+          {onPaintFormat && !tableContext?.isInTable && (
+            <ToolbarButton
+              onClick={onPaintFormat}
               disabled={disabled}
-              width={60}
-              placeholder="Arial"
-            />
-          )}
-          {showFontSizePicker && (
-            <FontSizePicker
-              value={
-                currentFormatting.fontSize !== undefined
-                  ? halfPointsToPoints(currentFormatting.fontSize)
-                  : 11
-              }
-              onChange={handleFontSizeChange}
-              disabled={disabled}
-              width={42}
-              placeholder="11"
-            />
+              title={t('formattingBar.paintFormat')}
+              ariaLabel={t('formattingBar.paintFormat')}
+              active={!!paintFormatArmed}
+              featureId="paintFormat"
+            >
+              <MaterialSymbol name="format_paint" size={ICON_SIZE} />
+            </ToolbarButton>
           )}
         </ToolbarGroup>
-      )}
 
-      {/* Text Formatting Group */}
-      <ToolbarGroup label={t('formattingBar.groups.textFormatting')}>
-        <ToolbarButton
-          onClick={() => handleFormat('bold')}
-          active={currentFormatting.bold}
-          disabled={disabled}
-          title={t('formattingBar.bold')}
-          shortcut="⌘B"
-          ariaLabel={t('formattingBar.bold')}
-          featureId="bold"
-        >
-          <MaterialSymbol name="format_bold" size={ICON_SIZE} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => handleFormat('italic')}
-          active={currentFormatting.italic}
-          disabled={disabled}
-          title={t('formattingBar.italic')}
-          shortcut="⌘I"
-          ariaLabel={t('formattingBar.italic')}
-          featureId="italic"
-        >
-          <MaterialSymbol name="format_italic" size={ICON_SIZE} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => handleFormat('underline')}
-          active={currentFormatting.underline}
-          disabled={disabled}
-          title={t('formattingBar.underline')}
-          shortcut="⌘U"
-          ariaLabel={t('formattingBar.underline')}
-          featureId="underline"
-        >
-          <MaterialSymbol name="format_underlined" size={ICON_SIZE} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => handleFormat('strikethrough')}
-          active={currentFormatting.strike}
-          disabled={disabled}
-          title={t('formattingBar.strikethrough')}
-          shortcut="⌘⇧X"
-          ariaLabel={t('formattingBar.strikethrough')}
-          featureId="strikethrough"
-        >
-          <MaterialSymbol name="strikethrough_s" size={ICON_SIZE} />
-        </ToolbarButton>
-        {/* Small caps / All caps — same toggle pattern as bold/italic.
+        {/* Zoom Control */}
+        {showZoomControl && (
+          <ToolbarGroup label={t('formattingBar.groups.zoom')}>
+            <ZoomControl
+              value={zoom}
+              onChange={onZoomChange}
+              minZoom={0.5}
+              maxZoom={2}
+              disabled={disabled}
+              compact
+              showButtons={false}
+            />
+          </ToolbarGroup>
+        )}
+
+        {/* Style Picker */}
+        {showStylePicker && (
+          <ToolbarGroup label={t('formattingBar.groups.styles')}>
+            <StylePicker
+              value={currentFormatting.styleId || 'Normal'}
+              onChange={handleStyleChange}
+              styles={documentStyles}
+              theme={theme}
+              disabled={disabled}
+              width={120}
+            />
+          </ToolbarGroup>
+        )}
+
+        {/* Font Family and Size Pickers */}
+        {(showFontPicker || showFontSizePicker) && (
+          <ToolbarGroup label={t('formattingBar.groups.font')}>
+            {showFontPicker && (
+              <FontPicker
+                value={currentFormatting.fontFamily || 'Arial'}
+                onChange={handleFontFamilyChange}
+                fonts={normalizedFonts}
+                disabled={disabled}
+                width={60}
+                placeholder="Arial"
+              />
+            )}
+            {showFontSizePicker && (
+              <FontSizePicker
+                value={
+                  currentFormatting.fontSize !== undefined
+                    ? halfPointsToPoints(currentFormatting.fontSize)
+                    : 11
+                }
+                onChange={handleFontSizeChange}
+                disabled={disabled}
+                width={42}
+                placeholder="11"
+              />
+            )}
+          </ToolbarGroup>
+        )}
+
+        {/* Text Formatting Group */}
+        <ToolbarGroup label={t('formattingBar.groups.textFormatting')}>
+          <ToolbarButton
+            onClick={() => handleFormat('bold')}
+            active={currentFormatting.bold}
+            disabled={disabled}
+            title={t('formattingBar.bold')}
+            shortcut="⌘B"
+            ariaLabel={t('formattingBar.bold')}
+            featureId="bold"
+          >
+            <MaterialSymbol name="format_bold" size={ICON_SIZE} />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => handleFormat('italic')}
+            active={currentFormatting.italic}
+            disabled={disabled}
+            title={t('formattingBar.italic')}
+            shortcut="⌘I"
+            ariaLabel={t('formattingBar.italic')}
+            featureId="italic"
+          >
+            <MaterialSymbol name="format_italic" size={ICON_SIZE} />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => handleFormat('underline')}
+            active={currentFormatting.underline}
+            disabled={disabled}
+            title={t('formattingBar.underline')}
+            shortcut="⌘U"
+            ariaLabel={t('formattingBar.underline')}
+            featureId="underline"
+          >
+            <MaterialSymbol name="format_underlined" size={ICON_SIZE} />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => handleFormat('strikethrough')}
+            active={currentFormatting.strike}
+            disabled={disabled}
+            title={t('formattingBar.strikethrough')}
+            shortcut="⌘⇧X"
+            ariaLabel={t('formattingBar.strikethrough')}
+            featureId="strikethrough"
+          >
+            <MaterialSymbol name="strikethrough_s" size={ICON_SIZE} />
+          </ToolbarButton>
+          {/* Small caps / All caps — same toggle pattern as bold/italic.
             Marks come from SmallCapsExtension / AllCapsExtension; the
             existing Format menu already drives the same `toggleSmallCaps`
             / `toggleAllCaps` actions. Surfacing here so doc users with
             Word muscle memory can find them in the toolbar. */}
-        <ToolbarButton
-          onClick={() => handleFormat('toggleSmallCaps')}
-          active={currentFormatting.smallCaps}
-          disabled={disabled}
-          title={t('formattingBar.smallCaps')}
-          ariaLabel={t('formattingBar.smallCaps')}
-        >
-          {/* Text glyph instead of MaterialSymbol — `format_letter_spacing`
+          <ToolbarButton
+            onClick={() => handleFormat('toggleSmallCaps')}
+            active={currentFormatting.smallCaps}
+            disabled={disabled}
+            title={t('formattingBar.smallCaps')}
+            ariaLabel={t('formattingBar.smallCaps')}
+          >
+            {/* Text glyph instead of MaterialSymbol — `format_letter_spacing`
               and `format_size` aren't in our iconMap (Icons.tsx ships
               hand-picked SVGs only), so they were rendering as empty
               <span>s. "Aa" / "AA" with mixed sizes matches Word's
               small-caps and all-caps icons better than the Material
               alternatives anyway. */}
-          <span
-            aria-hidden
-            style={{
-              fontWeight: 600,
-              fontFamily: 'inherit',
-              fontSize: ICON_SIZE - 2,
-              lineHeight: 1,
-              letterSpacing: 0.5,
-            }}
-          >
-            A<span style={{ fontSize: ICON_SIZE - 6 }}>a</span>
-          </span>
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => handleFormat('toggleAllCaps')}
-          active={currentFormatting.allCaps}
-          disabled={disabled}
-          title={t('formattingBar.allCaps')}
-          ariaLabel={t('formattingBar.allCaps')}
-        >
-          <span
-            aria-hidden
-            style={{
-              fontWeight: 600,
-              fontFamily: 'inherit',
-              fontSize: ICON_SIZE - 2,
-              lineHeight: 1,
-              letterSpacing: 0.5,
-            }}
-          >
-            AA
-          </span>
-        </ToolbarButton>
-        {showTextColorPicker && (
-          <ColorPicker
-            mode="text"
-            value={currentFormatting.color?.replace(/^#/, '')}
-            onChange={handleTextColorChange}
-            theme={theme}
-            disabled={disabled}
-            title={t('formattingBar.fontColor')}
-          />
-        )}
-        {showHighlightColorPicker && (
-          <ColorPicker
-            mode="highlight"
-            value={currentFormatting.highlight}
-            onChange={handleHighlightColorChange}
-            theme={theme}
-            disabled={disabled}
-            title={t('formattingBar.highlightColor')}
-          />
-        )}
-        <ToolbarButton
-          onClick={() => handleFormat('insertLink')}
-          disabled={disabled}
-          title={t('formattingBar.insertLink')}
-          shortcut="⌘K"
-          ariaLabel={t('formattingBar.insertLink')}
-        >
-          <MaterialSymbol name="link" size={ICON_SIZE} />
-        </ToolbarButton>
-        {onInsertImage && (
-          <ToolbarButton
-            onClick={onInsertImage}
-            disabled={disabled}
-            title={t('toolbar.image')}
-            ariaLabel={t('toolbar.image')}
-          >
-            <MaterialSymbol name="image" size={ICON_SIZE} />
-          </ToolbarButton>
-        )}
-        {onAddComment && (
-          <ToolbarButton
-            onClick={onAddComment}
-            disabled={disabled}
-            title={t('formattingBar.addComment')}
-            ariaLabel={t('formattingBar.addComment')}
-          >
-            <MaterialSymbol name="add_comment" size={ICON_SIZE} />
-          </ToolbarButton>
-        )}
-      </ToolbarGroup>
-
-      {/* Superscript/Subscript Group */}
-      <ToolbarGroup label={t('formattingBar.groups.script')}>
-        <ToolbarButton
-          onClick={() => handleFormat('superscript')}
-          active={currentFormatting.superscript}
-          disabled={disabled}
-          title={t('formattingBar.superscript')}
-          shortcut="⌘."
-          ariaLabel={t('formattingBar.superscript')}
-        >
-          <MaterialSymbol name="superscript" size={ICON_SIZE} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => handleFormat('subscript')}
-          active={currentFormatting.subscript}
-          disabled={disabled}
-          title={t('formattingBar.subscript')}
-          shortcut="⌘,"
-          ariaLabel={t('formattingBar.subscript')}
-        >
-          <MaterialSymbol name="subscript" size={ICON_SIZE} />
-        </ToolbarButton>
-      </ToolbarGroup>
-
-      {/* Alignment Dropdown */}
-      {showAlignmentButtons && (
-        <ToolbarGroup label={t('formattingBar.groups.alignment')}>
-          <AlignmentButtons
-            value={currentFormatting.alignment || 'left'}
-            onChange={handleAlignmentChange}
-            disabled={disabled}
-          />
-        </ToolbarGroup>
-      )}
-
-      {/* List Buttons and Line Spacing */}
-      {(showListButtons || showLineSpacingPicker) && (
-        <ToolbarGroup label={t('formattingBar.groups.listFormatting')}>
-          {showListButtons && (
-            <ListButtons
-              listState={currentFormatting.listState || createDefaultListState()}
-              onBulletList={handleBulletList}
-              onNumberedList={handleNumberedList}
-              onIndent={handleIndent}
-              onOutdent={handleOutdent}
-              disabled={disabled}
-              showIndentButtons={true}
-              compact
-              hasIndent={(currentFormatting.indentLeft ?? 0) > 0}
-            />
-          )}
-          {showLineSpacingPicker && (
-            <LineSpacingPicker
-              value={currentFormatting.lineSpacing}
-              onChange={handleLineSpacingChange}
-              disabled={disabled}
-              spaceBefore={currentFormatting.spaceBefore}
-              spaceAfter={currentFormatting.spaceAfter}
-              onSpaceBeforeChange={(twips) => onFormat?.({ type: 'spaceBefore', value: twips })}
-              onSpaceAfterChange={(twips) => onFormat?.({ type: 'spaceAfter', value: twips })}
-              onOpenCustomSpacing={onOpenParagraphDialog}
-              keepNext={currentFormatting.keepNext}
-              keepLines={currentFormatting.keepLines}
-              pageBreakBefore={currentFormatting.pageBreakBefore}
-              widowControl={currentFormatting.widowControl}
-              onTogglePagination={(key) => {
-                const current = currentFormatting[key as keyof typeof currentFormatting];
-                onFormat?.({
-                  type: key,
-                  value: !current,
-                } as FormattingAction);
+            <span
+              aria-hidden
+              style={{
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                fontSize: ICON_SIZE - 2,
+                lineHeight: 1,
+                letterSpacing: 0.5,
               }}
+            >
+              A<span style={{ fontSize: ICON_SIZE - 6 }}>a</span>
+            </span>
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => handleFormat('toggleAllCaps')}
+            active={currentFormatting.allCaps}
+            disabled={disabled}
+            title={t('formattingBar.allCaps')}
+            ariaLabel={t('formattingBar.allCaps')}
+          >
+            <span
+              aria-hidden
+              style={{
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                fontSize: ICON_SIZE - 2,
+                lineHeight: 1,
+                letterSpacing: 0.5,
+              }}
+            >
+              AA
+            </span>
+          </ToolbarButton>
+          {showTextColorPicker && (
+            <ColorPicker
+              mode="text"
+              value={currentFormatting.color?.replace(/^#/, '')}
+              onChange={handleTextColorChange}
+              theme={theme}
+              disabled={disabled}
+              title={t('formattingBar.fontColor')}
             />
           )}
-        </ToolbarGroup>
-      )}
-
-      {/* Image controls - shown when image is selected */}
-      {imageContext && onImageWrapType && (
-        <ToolbarGroup label={t('formattingBar.groups.image')}>
-          <ImageWrapDropdown
-            imageContext={imageContext}
-            onChange={onImageWrapType}
-            disabled={disabled}
-          />
-          {onImageTransform && (
-            <ImageTransformDropdown onTransform={onImageTransform} disabled={disabled} />
-          )}
-          {onOpenImageProperties && (
-            <ToolbarButton
-              onClick={onOpenImageProperties}
+          {showHighlightColorPicker && (
+            <ColorPicker
+              mode="highlight"
+              value={currentFormatting.highlight}
+              onChange={handleHighlightColorChange}
+              theme={theme}
               disabled={disabled}
-              title={t('formattingBar.imagePropertiesShortcut')}
-              ariaLabel={t('formattingBar.imageProperties')}
+              title={t('formattingBar.highlightColor')}
+            />
+          )}
+          <ToolbarButton
+            onClick={() => handleFormat('insertLink')}
+            disabled={disabled}
+            title={t('formattingBar.insertLink')}
+            shortcut="⌘K"
+            ariaLabel={t('formattingBar.insertLink')}
+          >
+            <MaterialSymbol name="link" size={ICON_SIZE} />
+          </ToolbarButton>
+          {onInsertImage && (
+            <ToolbarButton
+              onClick={onInsertImage}
+              disabled={disabled}
+              title={t('toolbar.image')}
+              ariaLabel={t('toolbar.image')}
             >
-              <MaterialSymbol name="tune" size={ICON_SIZE} />
+              <MaterialSymbol name="image" size={ICON_SIZE} />
+            </ToolbarButton>
+          )}
+          {onAddComment && (
+            <ToolbarButton
+              onClick={onAddComment}
+              disabled={disabled}
+              title={t('formattingBar.addComment')}
+              ariaLabel={t('formattingBar.addComment')}
+            >
+              <MaterialSymbol name="add_comment" size={ICON_SIZE} />
             </ToolbarButton>
           )}
         </ToolbarGroup>
-      )}
 
-      {/* Table Options - shown when cursor is in a table. Border / color /
+        {/* Superscript/Subscript Group */}
+        <ToolbarGroup label={t('formattingBar.groups.script')}>
+          <ToolbarButton
+            onClick={() => handleFormat('superscript')}
+            active={currentFormatting.superscript}
+            disabled={disabled}
+            title={t('formattingBar.superscript')}
+            shortcut="⌘."
+            ariaLabel={t('formattingBar.superscript')}
+          >
+            <MaterialSymbol name="superscript" size={ICON_SIZE} />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={() => handleFormat('subscript')}
+            active={currentFormatting.subscript}
+            disabled={disabled}
+            title={t('formattingBar.subscript')}
+            shortcut="⌘,"
+            ariaLabel={t('formattingBar.subscript')}
+          >
+            <MaterialSymbol name="subscript" size={ICON_SIZE} />
+          </ToolbarButton>
+        </ToolbarGroup>
+
+        {/* Alignment Dropdown */}
+        {showAlignmentButtons && (
+          <ToolbarGroup label={t('formattingBar.groups.alignment')}>
+            <AlignmentButtons
+              value={currentFormatting.alignment || 'left'}
+              onChange={handleAlignmentChange}
+              disabled={disabled}
+            />
+          </ToolbarGroup>
+        )}
+
+        {/* List Buttons and Line Spacing */}
+        {(showListButtons || showLineSpacingPicker) && (
+          <ToolbarGroup label={t('formattingBar.groups.listFormatting')}>
+            {showListButtons && (
+              <ListButtons
+                listState={currentFormatting.listState || createDefaultListState()}
+                onBulletList={handleBulletList}
+                onNumberedList={handleNumberedList}
+                onIndent={handleIndent}
+                onOutdent={handleOutdent}
+                disabled={disabled}
+                showIndentButtons={true}
+                compact
+                hasIndent={(currentFormatting.indentLeft ?? 0) > 0}
+              />
+            )}
+            {showLineSpacingPicker && (
+              <LineSpacingPicker
+                value={currentFormatting.lineSpacing}
+                onChange={handleLineSpacingChange}
+                disabled={disabled}
+                spaceBefore={currentFormatting.spaceBefore}
+                spaceAfter={currentFormatting.spaceAfter}
+                onSpaceBeforeChange={(twips) => onFormat?.({ type: 'spaceBefore', value: twips })}
+                onSpaceAfterChange={(twips) => onFormat?.({ type: 'spaceAfter', value: twips })}
+                onOpenCustomSpacing={onOpenParagraphDialog}
+                keepNext={currentFormatting.keepNext}
+                keepLines={currentFormatting.keepLines}
+                pageBreakBefore={currentFormatting.pageBreakBefore}
+                widowControl={currentFormatting.widowControl}
+                onTogglePagination={(key) => {
+                  const current = currentFormatting[key as keyof typeof currentFormatting];
+                  onFormat?.({
+                    type: key,
+                    value: !current,
+                  } as FormattingAction);
+                }}
+              />
+            )}
+          </ToolbarGroup>
+        )}
+
+        {/* Image controls - shown when image is selected */}
+        {imageContext && onImageWrapType && (
+          <ToolbarGroup label={t('formattingBar.groups.image')}>
+            <ImageWrapDropdown
+              imageContext={imageContext}
+              onChange={onImageWrapType}
+              disabled={disabled}
+            />
+            {onImageTransform && (
+              <ImageTransformDropdown onTransform={onImageTransform} disabled={disabled} />
+            )}
+            {onOpenImageProperties && (
+              <ToolbarButton
+                onClick={onOpenImageProperties}
+                disabled={disabled}
+                title={t('formattingBar.imagePropertiesShortcut')}
+                ariaLabel={t('formattingBar.imageProperties')}
+              >
+                <MaterialSymbol name="tune" size={ICON_SIZE} />
+              </ToolbarButton>
+            )}
+          </ToolbarGroup>
+        )}
+
+        {/* Table Options - shown when cursor is in a table. Border / color /
           width / fill now live in the Format (properties) panel, not here —
           the panel is the single home for object appearance, so they're no
           longer scattered across the toolbar. */}
-      {tableContext?.isInTable && onTableAction && (
-        <ToolbarGroup label={t('formattingBar.groups.table')}>
-          <TableStyleGallery documentStyles={documentStyles} onAction={handleTableAction} />
-          <TableMoreDropdown
-            onAction={handleTableAction}
-            disabled={disabled}
-            tableContext={tableContext}
-          />
-        </ToolbarGroup>
-      )}
+        {tableContext?.isInTable && onTableAction && (
+          <ToolbarGroup label={t('formattingBar.groups.table')}>
+            <TableStyleGallery documentStyles={documentStyles} onAction={handleTableAction} />
+            <TableMoreDropdown
+              onAction={handleTableAction}
+              disabled={disabled}
+              tableContext={tableContext}
+            />
+          </ToolbarGroup>
+        )}
 
-      {/* Clear Formatting */}
-      <ToolbarButton
-        onClick={() => handleFormat('clearFormatting')}
-        disabled={disabled}
-        title={t('formattingBar.clearFormatting')}
-        shortcut={'⌘\\'}
-        ariaLabel={t('formattingBar.clearFormatting')}
-      >
-        <MaterialSymbol name="format_clear" size={ICON_SIZE} />
-      </ToolbarButton>
+        {/* Clear Formatting */}
+        <ToolbarButton
+          onClick={() => handleFormat('clearFormatting')}
+          disabled={disabled}
+          title={t('formattingBar.clearFormatting')}
+          shortcut={'⌘\\'}
+          ariaLabel={t('formattingBar.clearFormatting')}
+        >
+          <MaterialSymbol name="format_clear" size={ICON_SIZE} />
+        </ToolbarButton>
 
-      {/* Custom toolbar items */}
-      {children}
-    </div>
+        {/* Custom toolbar items */}
+        {children}
+      </div>
+    </>
   );
 }

@@ -143,24 +143,12 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 function useResponsiveLayout() {
-  // Auto-zoom strategy:
-  // - Desktop / tablet (vw ≥ page-with-padding): no zoom — render at 100%.
-  // - Mid-width: scale to fit the full page width inside the viewport, so
-  //   the margins are visible (Word-like preview).
-  // - Phone (vw ≤ 720): scale to fit the *content* width (page minus the
-  //   1-inch margins), so text fills the screen and stays readable.
-  //   Otherwise the auto-fit math gives 45% on iPhone, which leaves
-  //   text at ≈4 pt and a near-invisible caret.
+  // Fit the whole page on narrow screens. Zoom remains available for detail;
+  // the first view must not strand the text beyond a horizontal scrollbar.
   const calcZoom = () => {
-    const PAGE_WIDTH = 816; // 8.5in × 96dpi
-    const PAGE_PADDING = 48;
-    const CONTENT_WIDTH = PAGE_WIDTH - 96 - 96; // standard 1-inch margins
-    const vw = window.innerWidth;
-    if (vw >= PAGE_WIDTH + PAGE_PADDING) return 1.0;
-    const usableVw = Math.max(280, vw - 16); // breathing room on phones
-    const target = vw <= 720 ? usableVw / CONTENT_WIDTH : usableVw / (PAGE_WIDTH + PAGE_PADDING);
-    // Round down to 0.05 to keep the indicator clean (40%, 45%, … not 43%).
-    return Math.max(0.35, Math.min(1.0, Math.floor(target * 20) / 20));
+    const pageWidth = 816;
+    const usableWidth = Math.max(240, window.innerWidth - 48);
+    return Math.max(0.25, Math.min(1, Math.floor((usableWidth / pageWidth) * 100) / 100));
   };
 
   const [zoom, setZoom] = useState(calcZoom);
@@ -1578,6 +1566,11 @@ export function App() {
         )}
         <DocxEditor
           ref={editorRef}
+          features={
+            new URLSearchParams(window.location.search).get('chrome') === 'minimal'
+              ? { titleBar: false }
+              : undefined
+          }
           document={documentBuffer ? undefined : currentDocument}
           documentBuffer={documentBuffer}
           author={randomAuthor}
@@ -1595,7 +1588,11 @@ export function App() {
           onDocumentNameChange={handleDocumentNameChange}
           onNew={handleNewDocument}
           renderLogo={renderLogo}
-          renderTitleBarRight={renderTitleBarRight}
+          renderTitleBarRight={
+            new URLSearchParams(window.location.search).get('chrome') === 'minimal'
+              ? undefined
+              : renderTitleBarRight
+          }
           // Stable callbacks — defined as useCallback above so DocxEditor's
           // internal handleSave/handleExport don't re-reference on every status change.
           onSave={isDesktop ? onSaveDesktop : undefined}
@@ -1701,7 +1698,17 @@ function CollabApp({
     new URLSearchParams(window.location.search).get('mode') === 'viewing' ? 'view' : 'edit'
   );
 
-  const { plugins, status, peers, unsyncedChanges, hasSynced, metaMap, ydoc, commentsMap, reconnect } = useCollab({
+  const {
+    plugins,
+    status,
+    peers,
+    unsyncedChanges,
+    hasSynced,
+    metaMap,
+    ydoc,
+    commentsMap,
+    reconnect,
+  } = useCollab({
     room,
     backend,
     user,
@@ -2022,7 +2029,6 @@ function CollabApp({
         .replace(/<[^>]*>/g, '')
         .trim();
 
-
     // Poll rather than wait a fixed delay. The provider's first sync has
     // to have landed before an empty room can be told apart from a
     // populated one that is merely slow, and the editor's view has to
@@ -2060,10 +2066,9 @@ function CollabApp({
 
       let won = false;
       try {
-        const res = await fetch(
-          `${collabHttp}/api/rooms/${encodeURIComponent(room)}/claim-init`,
-          { method: 'POST' }
-        );
+        const res = await fetch(`${collabHttp}/api/rooms/${encodeURIComponent(room)}/claim-init`, {
+          method: 'POST',
+        });
         won = res.ok && ((await res.json()) as { won?: boolean }).won === true;
       } catch {
         // Can't reach the arbiter. Standing down is the safe failure:

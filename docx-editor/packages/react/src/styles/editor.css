@@ -1206,3 +1206,6 @@
 .ep-root::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* Host themes opt into the compact formatting disclosure. */
+.flares-format-toggle { display: none; }

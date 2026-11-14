@@ -7,6 +7,11 @@
 import './desk-bridge-bootstrap';
 
 import './styles.css';
+import './flares-theme.css';
+
+if (new URLSearchParams(window.location.search).get('chrome') === 'minimal') {
+  document.documentElement.dataset.flaresEditor = 'true';
+}
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { setSpellAssetUrls, setWriterWorkerUrl } from '@casualoffice/docs';

@@ -262,7 +262,11 @@ export function StatusBar({
         </span>
       )}
       {charCount !== undefined && prefs.chars && (
-        <span style={cellStyle} aria-label={`${charCount} characters`}>
+        <span
+          style={cellStyle}
+          data-testid="status-character-count"
+          aria-label={`${charCount} characters`}
+        >
           {formatCount(charCount, 'character')}
         </span>
       )}
