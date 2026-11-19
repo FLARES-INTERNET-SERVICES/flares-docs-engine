@@ -17,6 +17,7 @@ import {
 import { toProseDoc } from '@eigenpal/docx-core/prosemirror';
 import { parseDocx } from '@eigenpal/docx-core/docx';
 import { useCollab } from './collab/useCollab';
+import { addedComments, CommentActivityOutbox } from './collab/commentActivity';
 // Upstream ships this transport, complete with tests, and the app never
 // called it -- so comments were created locally and reached nobody.
 import { commentsFromMap, writeCommentsToMap, observeComments } from '@casualoffice/docs';
@@ -1896,6 +1897,35 @@ function CollabApp({
   // React state and would reach nobody. Drive the editor's controlled
   // `comments` from the map and reconcile changes back into it.
   const [collabComments, setCollabComments] = useState<CommentThread[]>([]);
+  const commentOutbox = useMemo(() => {
+    let storage: Storage | undefined;
+    try { storage = window.sessionStorage; } catch { /* Private storage may be disabled. */ }
+    const actor = new URLSearchParams(window.location.search).get('activityUser') || '';
+    return new CommentActivityOutbox(storage, `comment-activity:${hostOrigin}:${room}:${actor}`);
+  }, [room, hostOrigin]);
+  useEffect(() => {
+    if (!hostOrigin || window.parent === window) return;
+    const acknowledge = (event: MessageEvent) => {
+      if (event.origin === hostOrigin && event.source === window.parent && event.data?.type === 'flares:commentAcknowledged') {
+        commentOutbox.acknowledge(String(event.data.id));
+      }
+    };
+    window.addEventListener('message', acknowledge);
+    return () => window.removeEventListener('message', acknowledge);
+  }, [hostOrigin, commentOutbox]);
+  useEffect(() => {
+    if (!hostOrigin || window.parent === window || status !== 'connected' || !hasSynced || unsyncedChanges !== 0) return;
+    const flush = () => {
+      for (const event of commentOutbox.events()) {
+        // Never announce work that has not reached the shared room, or a comment deleted before reconnecting.
+        if (!commentsMap.has(event.id)) { commentOutbox.acknowledge(event.id); continue; }
+        window.parent.postMessage({ type: 'casualoffice:commentAdded', ...event }, hostOrigin);
+      }
+    };
+    flush();
+    const timer = window.setInterval(flush, 5000);
+    return () => window.clearInterval(timer);
+  }, [hostOrigin, status, hasSynced, unsyncedChanges, commentsMap, commentOutbox]);
   const allocateAnnotationId = useMemo(
     () =>
       createAnnotationIdAllocator(
@@ -1909,9 +1939,12 @@ function CollabApp({
     return observeComments(commentsMap, (next) => setCollabComments(next as CommentThread[]));
   }, [commentsMap]);
   const handleCommentsChange = useCallback(
-    (next: CommentThread[]) =>
-      writeCommentsToMap(commentsMap, next as never, collabComments as never),
-    [commentsMap, collabComments]
+    (next: CommentThread[]) => {
+      const additions = addedComments(next, collabComments, new Set(commentsMap.keys()));
+      writeCommentsToMap(commentsMap, next as never, collabComments as never);
+      commentOutbox.add(additions);
+    },
+    [commentsMap, collabComments, commentOutbox]
   );
   const [seed, setSeed] = useState<SeedState>({ kind: 'loading' });
   // The host filled the room before issuing this session.
