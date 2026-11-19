@@ -174,3 +174,5 @@ export {
   getTextBoxOutlineWidthPx,
 } from './textBoxParser';
 export type { ParagraphParserFn, TableParserFn } from './textBoxParser';
+
+export { injectReplyRangeMarkers, injectTCReplyRangeMarkers } from './commentRanges';

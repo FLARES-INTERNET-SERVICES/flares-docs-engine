@@ -17,7 +17,7 @@
 import * as Y from 'yjs';
 import { prosemirrorToYXmlFragment, yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import { schema, fromProseDoc, toProseDoc } from '@eigenpal/docx-core/prosemirror';
-import { repackDocx, createDocx, parseDocx } from '@eigenpal/docx-core/headless';
+import { repackDocx, createDocx, parseDocx, injectReplyRangeMarkers, injectTCReplyRangeMarkers } from '@eigenpal/docx-core/headless';
 import { assertTextSurvived, completePackage } from './complete-package.mts';
 
 export interface SerializeRequest {
@@ -78,6 +78,11 @@ export async function docxToYDocState(docx: Uint8Array): Promise<Uint8Array> {
 
   try {
     prosemirrorToYXmlFragment(pmDoc, ydoc.getXmlFragment('prosemirror'));
+    const comments = ydoc.getMap('comments');
+    for (const comment of parsed.package.document.comments ?? []) {
+      comments.set(String(comment.id), comment);
+    }
+    ydoc.getMap('meta').set('commentsInitialized', true);
 
     return Y.encodeStateAsUpdate(ydoc);
   } finally {
@@ -105,6 +110,15 @@ export async function serializeYDocToDocx(request: SerializeRequest): Promise<Ui
     // is built from scratch and those are the defaults.
     const base = request.base ? await parseDocx(request.base) : undefined;
     const document = fromProseDoc(pmDoc, base);
+    const comments = ydoc.getMap('comments');
+    // Old rooms may have no comment map at all: preserve their base comments.
+    // The marker distinguishes that legacy case from intentionally deleting all.
+    if (comments.size || ydoc.getMap('meta').get('commentsInitialized') === true) {
+      document.package.document.comments = Array.from(comments.values()) as NonNullable<typeof document.package.document.comments>;
+    }
+    const savedComments = document.package.document.comments ?? [];
+    injectReplyRangeMarkers(document.package.document.content, savedComments);
+    injectTCReplyRangeMarkers(document.package.document.content, savedComments);
 
     // repackDocx writes the ZIP. serializeDocx (serializeDocument) produces the
     // document XML only -- a fragment of the package, not a file any word

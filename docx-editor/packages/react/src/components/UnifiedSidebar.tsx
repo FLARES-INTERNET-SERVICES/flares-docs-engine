@@ -27,6 +27,8 @@ export interface UnifiedSidebarProps {
   onExpandedItemChange?: (itemId: string | null) => void;
   /** Controlled: sidebar item to expand based on cursor position. */
   activeItemId?: string | null;
+  /** Stack cards in a bounded mobile panel rather than beside page anchors. */
+  stacked?: boolean;
 }
 
 export function UnifiedSidebar({
@@ -38,6 +40,7 @@ export function UnifiedSidebar({
   editorContainerRef,
   onExpandedItemChange,
   activeItemId,
+  stacked = false,
 }: UnifiedSidebarProps) {
   const { t } = useTranslation();
   // Fully controlled: parent owns expansion state via activeItemId
@@ -194,16 +197,16 @@ export function UnifiedSidebar({
       role="complementary"
       aria-label={t('sidebar.ariaLabel')}
       style={{
-        position: 'absolute',
+        position: stacked ? 'relative' : 'absolute',
         top: 0,
-        left: `calc(50% - ${SIDEBAR_DOCUMENT_SHIFT}px + ${(pageWidth * zoom) / 2 + SIDEBAR_PAGE_GAP}px)`,
-        width: SIDEBAR_WIDTH,
+        left: stacked ? 0 : `calc(50% - ${SIDEBAR_DOCUMENT_SHIFT}px + ${(pageWidth * zoom) / 2 + SIDEBAR_PAGE_GAP}px)`,
+        width: stacked ? '100%' : SIDEBAR_WIDTH,
         fontFamily: "'Google Sans', Roboto, Arial, sans-serif",
         zIndex: 40,
         backgroundColor: 'transparent',
         overflowY: 'visible',
         overflowX: 'visible',
-        opacity: hasPositions ? 1 : 0,
+        opacity: stacked || hasPositions ? 1 : 0,
         transition: 'opacity var(--doc-anim-base)',
       }}
       onMouseDown={(e) => e.stopPropagation()}
@@ -216,7 +219,7 @@ export function UnifiedSidebar({
           const isNewCard = !isKnown && yPos !== undefined;
           const noPosition = hasPositions && !positionMap.has(item.id);
 
-          const style: React.CSSProperties = hasPositions
+          const style: React.CSSProperties = stacked ? { marginBottom: 8 } : hasPositions
             ? yPos !== undefined
               ? { position: 'absolute', top: yPos, left: 0, right: 0, opacity: 1 }
               : {

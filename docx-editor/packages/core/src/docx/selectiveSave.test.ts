@@ -96,6 +96,43 @@ describe('Selective XML Patch with real DOCX', () => {
 // ============================================================================
 
 describe('attemptSelectiveSave', () => {
+  test('deleting the last comment clears every comment part without changing body XML', async () => {
+    const source = await parseDocx(await loadFixture('example-with-image.docx'), {
+      preloadFonts: false,
+    });
+    source.package.document.comments = [
+      {
+        id: 1,
+        author: 'Reviewer',
+        content: [
+          {
+            type: 'paragraph',
+            content: [{ type: 'run', content: [{ type: 'text', text: 'Delete this thread' }] }],
+          },
+        ],
+      },
+    ];
+    const buffer = await repackDocx(source);
+    const doc = await parseDocx(buffer, { preloadFonts: false });
+    expect(doc.package.document.comments?.length).toBeGreaterThan(0);
+    doc.package.document.comments = [];
+    const result = await attemptSelectiveSave(doc, buffer, {
+      changedParaIds: new Set(),
+      structuralChange: false,
+      hasUntrackedChanges: false,
+    });
+    expect(result).not.toBeNull();
+    const parsed = await parseDocx(result!, { preloadFonts: false });
+    expect(parsed.package.document.comments ?? []).toEqual([]);
+    expect(await getDocumentXml(result!)).toBe(await getDocumentXml(buffer));
+    const zip = await JSZip.loadAsync(result!);
+    for (const name of ['commentsExtended.xml', 'commentsIds.xml', 'commentsExtensible.xml']) {
+      const xml = await zip.file(`word/${name}`)?.async('text');
+      if (xml)
+        expect(xml).not.toMatch(/<(?:w15:commentEx|w16cid:commentId|w16cex:commentExtensible)\s/);
+    }
+  });
+
   test('returns null when structural change occurred', async () => {
     const buffer = await loadFixture('example-with-image.docx');
     const doc = await parseDocx(buffer, { preloadFonts: false });

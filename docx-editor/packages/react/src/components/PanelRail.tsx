@@ -28,6 +28,8 @@ import { formatShortcut } from '../lib/platform';
 import { useTranslation } from '../i18n';
 
 export interface PanelRailProps {
+  /** Place controls above the mobile document, rather than over its text. */
+  horizontal?: boolean;
   /** Whether the outline panel is open. Drives the active state. */
   outlineVisible?: boolean;
   /** Whether the comments sidebar is open. */
@@ -84,8 +86,8 @@ const btnStyle = (active: boolean): CSSProperties => ({
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  height: 32,
-  width: 32,
+  height: 'var(--rail-button-size, 32px)',
+  width: 'var(--rail-button-size, 32px)',
   margin: '0 auto',
   border: 0,
   borderRadius: 4,
@@ -153,6 +155,7 @@ export function PanelRail({
   onToggleChat,
   docopsVisible,
   onToggleDocOps,
+  horizontal = false,
 }: PanelRailProps) {
   const { t } = useTranslation();
   // No-op if nothing to toggle (host wired no panels) — render nothing
@@ -171,7 +174,7 @@ export function PanelRail({
   const outlineShortcut = formatShortcut('Ctrl+Shift+H');
 
   return (
-    <aside style={railStyle} aria-label="Panels" data-testid="panel-rail">
+    <aside style={horizontal ? { ...railStyle, ['--rail-button-size' as string]: '44px', position: 'relative', top: 'auto', right: 'auto', width: 'auto', flexDirection: 'row', flexWrap: 'wrap', order: -1, alignSelf: 'flex-end', margin: '4px 12px', flexShrink: 0 } : railStyle} aria-label="Panels" data-testid="panel-rail">
       {onToggleOutline && (
         <RailButton
           testId="rail-outline"

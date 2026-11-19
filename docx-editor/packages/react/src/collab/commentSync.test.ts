@@ -19,6 +19,38 @@ function comment(id: number, text: string, extra: Partial<Comment> = {}): Commen
 const sync = (from: Y.Doc, to: Y.Doc) => Y.applyUpdate(to, Y.encodeStateAsUpdate(from));
 
 describe('commentSync (collab transport)', () => {
+  test('a stale rendered snapshot preserves remote additions and edits', () => {
+    const doc = new Y.Doc();
+    const map = doc.getMap('comments');
+    const rendered = [comment(1, 'original')];
+    writeCommentsToMap(map, rendered);
+    writeCommentsToMap(map, [
+      comment(1, 'remote edit'),
+      comment(2, 'remote reply', { parentId: 1 }),
+    ]);
+    writeCommentsToMap(map, [...rendered, comment(3, 'local reply', { parentId: 1 })], rendered);
+    expect(commentsFromMap(map)).toEqual([
+      comment(1, 'remote edit'),
+      comment(2, 'remote reply', { parentId: 1 }),
+      comment(3, 'local reply', { parentId: 1 }),
+    ]);
+    doc.destroy();
+  });
+
+  test('unchanged stale comments do not resurrect remotely deleted comments', () => {
+    const doc = new Y.Doc();
+    const map = doc.getMap('comments');
+    const rendered = [comment(1, 'deleted remotely'), comment(2, 'kept')];
+    writeCommentsToMap(map, rendered);
+    map.delete('1');
+    writeCommentsToMap(map, [...rendered, comment(3, 'new')], rendered);
+    expect(commentsFromMap(map).map((c) => c.id)).toEqual([2, 3]);
+    // Explicit local removals still apply without deleting unseen remote additions.
+    writeCommentsToMap(map, [], [comment(2, 'kept')]);
+    expect(commentsFromMap(map).map((c) => c.id)).toEqual([3]);
+    doc.destroy();
+  });
+
   test('add, reply, resolve, delete all propagate to a peer', () => {
     const docA = new Y.Doc();
     const docB = new Y.Doc();

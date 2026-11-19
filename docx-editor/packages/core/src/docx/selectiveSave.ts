@@ -14,6 +14,7 @@
 
 import type { Document, BlockContent } from '../types/document';
 import { serializeDocument } from './serializer/documentSerializer';
+import { normalizeAnnotationIds } from './annotationIds';
 import {
   serializeCommentsWithInfo,
   serializeCommentsExtended,
@@ -23,6 +24,7 @@ import {
 import { buildPatchedDocumentXml } from './selectiveXmlPatch';
 import {
   applyUpdatesToZip,
+  emptyCommentPartUpdates,
   findMaxRId,
   updateCoreProperties,
   collectHeaderFooterUpdates,
@@ -91,6 +93,8 @@ export async function attemptSelectiveSave(
   if (structuralChange) return null;
   if (hasUntrackedChanges) return null;
   if (!originalBuffer) return null;
+  // Renumbering must update every anchor, including otherwise untouched parts.
+  if (normalizeAnnotationIds(doc) !== doc) return null;
 
   // Check for new images/hyperlinks that need relationship management
   const content = doc.package.document.content;
@@ -104,6 +108,9 @@ export async function attemptSelectiveSave(
     const JSZip = (await import('jszip')).default;
     const zip = await JSZip.loadAsync(originalBuffer);
     const updates = new Map<string, string>();
+    if (comments && comments.length === 0) {
+      for (const [path, xml] of emptyCommentPartUpdates(zip)) updates.set(path, xml);
+    }
 
     // Patch document.xml if paragraphs changed
     if (changedParaIds.size > 0) {

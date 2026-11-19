@@ -34,6 +34,7 @@
  */
 
 import JSZip from 'jszip';
+import { normalizeAnnotationIds } from './annotationIds';
 import type { Document } from '../types/document';
 import type { BlockContent, HeaderFooter, Image, Hyperlink } from '../types/content';
 import { serializeDocument } from './serializer/documentSerializer';
@@ -66,13 +67,59 @@ export function findMaxRId(relsXml: string): number {
 // COMMENTS SERIALIZATION
 // ============================================================================
 
+/** Empty parts retain valid relationships without resurrecting deleted threads. */
+export function emptyCommentPartUpdates(zip: JSZip): Map<string, string> {
+  const updates = new Map<string, string>();
+  const parts = [
+    [
+      'comments.xml',
+      'w:comments',
+      'w',
+      'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+    ],
+    [
+      'commentsExtended.xml',
+      'w15:commentsEx',
+      'w15',
+      'http://schemas.microsoft.com/office/word/2012/wordml',
+    ],
+    [
+      'commentsIds.xml',
+      'w16cid:commentsIds',
+      'w16cid',
+      'http://schemas.microsoft.com/office/word/2016/wordml/cid',
+    ],
+    [
+      'commentsExtensible.xml',
+      'w16cex:commentsExtensible',
+      'w16cex',
+      'http://schemas.microsoft.com/office/word/2018/wordml/cex',
+    ],
+  ];
+  for (const [name, root, prefix, ns] of parts) {
+    if (zip.file(`word/${name}`)) {
+      updates.set(
+        `word/${name}`,
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><${root} xmlns:${prefix}="${ns}"/>`
+      );
+    }
+  }
+  return updates;
+}
+
 async function serializeCommentsToZip(
   doc: Document,
   zip: JSZip,
   compressionLevel: number
 ): Promise<void> {
   const comments = doc.package.document.comments;
-  if (!comments || comments.length === 0) return;
+  if (!comments) return;
+  if (comments.length === 0) {
+    // Keep existing part relationships valid, but never leave deleted threads
+    // in the original ZIP where Word would load them again.
+    for (const [path, xml] of emptyCommentPartUpdates(zip)) zip.file(path, xml);
+    return;
+  }
 
   const { xml: commentsXml, paraInfos } = serializeCommentsWithInfo(comments);
   zip.file('word/comments.xml', commentsXml, {
@@ -460,7 +507,7 @@ export async function repackDocx(doc: Document, options: RepackOptions = {}): Pr
   }
 
   const { compressionLevel = 6, updateModifiedDate = true, modifiedBy } = options;
-  const exportDocument = doc;
+  const exportDocument = normalizeAnnotationIds(doc);
 
   // Load the original ZIP
   const originalZip = await JSZip.loadAsync(doc.originalBuffer);
@@ -566,6 +613,8 @@ export async function repackDocx(doc: Document, options: RepackOptions = {}): Pr
     });
   }
 
+  await serializeCommentsToZip(exportDocument, newZip, compressionLevel);
+
   // Generate the new DOCX file
   const arrayBuffer = await newZip.generateAsync({
     type: 'arraybuffer',
@@ -590,7 +639,7 @@ export async function repackDocxFromRaw(
   options: RepackOptions = {}
 ): Promise<ArrayBuffer> {
   const { compressionLevel = 6, updateModifiedDate = true, modifiedBy } = options;
-  const exportDocument = doc;
+  const exportDocument = normalizeAnnotationIds(doc);
 
   // Create a new ZIP with all original files
   const newZip = new JSZip();
@@ -836,8 +885,14 @@ async function ensureAllCommentParts(zip: JSZip, compressionLevel: number): Prom
   // Relationships — single read/write
   const relsPath = 'word/_rels/document.xml.rels';
   const relsFile = zip.file(relsPath);
-  if (relsFile) {
-    let relsXml = await relsFile.async('text');
+  {
+    let relsXml = relsFile
+      ? await relsFile.async('text')
+      : '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    relsXml = relsXml.replace(
+      /<Relationships\b([^>]*?)\s*\/>/,
+      '<Relationships$1></Relationships>'
+    );
     let changed = false;
     for (const { target, relType } of COMMENT_PARTS) {
       if (!relsXml.includes(target)) {

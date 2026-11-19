@@ -9,6 +9,7 @@ import {
   type Document as DocxDocument,
   createEmptyDocument,
   PresenceCluster,
+  createAnnotationIdAllocator,
 } from '@casualoffice/docs';
 // Document -> ProseMirror conversion, used to publish an imported .docx
 // into a freshly-created collaborative room. Deep import because the
@@ -160,7 +161,12 @@ function useResponsiveLayout() {
       setIsMobile(window.innerWidth <= 768);
     };
     window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const observer = new ResizeObserver(onResize);
+    observer.observe(document.documentElement);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', onResize);
+    };
   }, []);
 
   return { zoom, isMobile };
@@ -1580,7 +1586,8 @@ export function App() {
           showToolbar={true}
           showRuler={!isMobile}
           showZoomControl={true}
-          initialZoom={autoZoom}
+          initialZoom={isMobile ? 1 : autoZoom}
+          screenWidth={isMobile ? Math.max(240, window.innerWidth - 64) : undefined}
           disableFindReplaceShortcuts={disableFindReplaceShortcuts}
           commentIdBase={commentIdBase}
           wordCompat={wordCompat}
@@ -1686,6 +1693,19 @@ function CollabApp({
   onError,
   onFontsLoaded,
 }: CollabAppProps) {
+  const [printLayoutOnMobile, setPrintLayoutOnMobile] = useState(false);
+  const [screenWidth, setScreenWidth] = useState(() => Math.max(240, window.innerWidth - 64));
+  useEffect(() => {
+    const resize = () => setScreenWidth(Math.max(240, window.innerWidth - 64));
+    window.addEventListener('resize', resize);
+    const observer = new ResizeObserver(resize);
+    observer.observe(document.documentElement);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', resize);
+    };
+  }, []);
+  const mobileReflow = isMobile && !printLayoutOnMobile;
   // The host's session token. Kept in a ref because it changes on renewal, and
   // the socket should pick up the new one on its next connection without the
   // document being rebuilt around it.
@@ -1869,13 +1889,22 @@ function CollabApp({
   // React state and would reach nobody. Drive the editor's controlled
   // `comments` from the map and reconcile changes back into it.
   const [collabComments, setCollabComments] = useState<CommentThread[]>([]);
+  const allocateAnnotationId = useMemo(
+    () =>
+      createAnnotationIdAllocator(
+        () => ydoc.clientID,
+        (id) => commentsMap.has(String(id))
+      ),
+    [ydoc, commentsMap]
+  );
   useEffect(() => {
     setCollabComments(commentsFromMap(commentsMap) as CommentThread[]);
     return observeComments(commentsMap, (next) => setCollabComments(next as CommentThread[]));
   }, [commentsMap]);
   const handleCommentsChange = useCallback(
-    (next: CommentThread[]) => writeCommentsToMap(commentsMap, next as never),
-    [commentsMap]
+    (next: CommentThread[]) =>
+      writeCommentsToMap(commentsMap, next as never, collabComments as never),
+    [commentsMap, collabComments]
   );
   const [seed, setSeed] = useState<SeedState>({ kind: 'loading' });
   // The host filled the room before issuing this session.
@@ -2137,6 +2166,36 @@ function CollabApp({
   return (
     <div style={styles.container}>
       {!hostOwnsPresence && <DisconnectedBanner status={status} />}
+      {isMobile && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            padding: '4px 12px',
+            background: 'white',
+            fontSize: 13,
+          }}
+        >
+          <span>{mobileReflow ? 'Mobile view' : 'Print layout'}</span>
+          <button
+            type="button"
+            aria-pressed={printLayoutOnMobile}
+            style={{
+              minHeight: 44,
+              padding: '8px 12px',
+              border: '1px solid #ddd',
+              borderRadius: 8,
+              background: 'white',
+              color: '#171717',
+            }}
+            onClick={() => setPrintLayoutOnMobile((value) => !value)}
+          >
+            {mobileReflow ? 'Show print layout' : 'Use mobile view'}
+          </button>
+        </div>
+      )}
       <main style={styles.main}>
         <DocxEditor
           ref={editorRef}
@@ -2170,12 +2229,14 @@ function CollabApp({
           showToolbar={true}
           showRuler={!isMobile}
           showZoomControl={true}
-          initialZoom={zoom}
+          initialZoom={mobileReflow ? 1 : zoom}
+          screenWidth={mobileReflow ? screenWidth : undefined}
           disableFindReplaceShortcuts={disableFindReplaceShortcuts}
           commentIdBase={commentIdBase}
           documentName={collabFileName ?? seed.fileName}
           onDocumentNameChange={handleRename}
           comments={collabComments as never}
+          allocateAnnotationId={allocateAnnotationId}
           onCommentsChange={handleCommentsChange as never}
           renderTitleBarRight={hostOwnsPresence ? undefined : renderTitleBarRight}
           documentMode={documentMode}

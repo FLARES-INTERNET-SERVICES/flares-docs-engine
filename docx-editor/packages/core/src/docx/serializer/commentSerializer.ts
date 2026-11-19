@@ -151,7 +151,9 @@ function serializeComment(comment: Comment, paraInfos: CommentParaInfo[]): strin
     commentId: comment.id,
     lastParaId: commentParaId,
     durableId: generateHexId(),
-    parentId: comment.parentId,
+    // Older clients could assign a reply the same ID as its revision parent.
+    // An exported comment must never thread back to itself.
+    parentId: comment.parentId === comment.id ? undefined : comment.parentId,
     done: comment.done,
   });
 

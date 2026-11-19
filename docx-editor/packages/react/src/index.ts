@@ -1030,6 +1030,7 @@ export {
   downloadServerVersion,
   type ServerVersionBackend,
 } from './version-history/server-source';
+export { createAnnotationIdAllocator } from './collab/annotationIds';
 export {
   useEditHistory,
   type EditHistoryEntry,

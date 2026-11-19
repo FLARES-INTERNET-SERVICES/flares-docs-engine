@@ -332,3 +332,5 @@ export {
   createCommand,
   DEFAULT_AI_ACTIONS,
 } from './types/agentApi';
+
+export { injectReplyRangeMarkers, injectTCReplyRangeMarkers } from './docx/commentRanges';

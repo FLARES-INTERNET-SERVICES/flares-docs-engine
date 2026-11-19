@@ -37,6 +37,7 @@ import type { EditorView } from 'prosemirror-view';
 
 // Internal components
 import { HiddenProseMirror, type HiddenProseMirrorRef } from './HiddenProseMirror';
+import { screenGeometry, screenBlocks } from './screenLayout';
 import { SelectionOverlay } from './SelectionOverlay';
 import { MobileFormatBar } from '../components/ui/MobileFormatBar';
 import { usePinchZoom } from '../components/hooks/usePinchZoom';
@@ -260,6 +261,8 @@ export interface PagedEditorProps {
   firstPageFooterContent?: HeaderFooter | null;
   /** Whether the editor is read-only. */
   readOnly?: boolean;
+  /** Optional screen-only reflow width; export geometry remains unchanged. */
+  screenWidth?: number;
   /** Gap between pages in pixels. */
   pageGap?: number;
   /** Zoom level (1 = 100%). */
@@ -1453,6 +1456,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       firstPageHeaderContent,
       firstPageFooterContent,
       readOnly = false,
+      screenWidth,
       pageGap = DEFAULT_PAGE_GAP,
       zoom = 1,
       wordCompat = false,
@@ -1765,17 +1769,17 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
     const [overlayReanchorTick, setOverlayReanchorTick] = useState(0);
 
     // Compute page size and margins
-    const pageSize = useMemo(() => getPageSize(sectionProperties), [sectionProperties]);
-    const margins = useMemo(() => getMargins(sectionProperties), [sectionProperties]);
-    const columns = useMemo(() => getColumns(sectionProperties), [sectionProperties]);
+    const pageSize = useMemo(() => screenWidth ? screenGeometry(screenWidth, DEFAULT_PAGE_HEIGHT).pageSize : getPageSize(sectionProperties), [sectionProperties, screenWidth]);
+    const margins = useMemo(() => screenWidth ? screenGeometry(screenWidth, DEFAULT_PAGE_HEIGHT).margins : getMargins(sectionProperties), [sectionProperties, screenWidth]);
+    const columns = useMemo(() => screenWidth ? undefined : getColumns(sectionProperties), [sectionProperties, screenWidth]);
     const { finalPageSize, finalMargins, finalColumns } = useMemo(() => {
       const props = finalSectionProperties ?? sectionProperties;
       return {
-        finalPageSize: getPageSize(props),
-        finalMargins: getMargins(props),
-        finalColumns: getColumns(props),
+        finalPageSize: screenWidth ? screenGeometry(screenWidth, DEFAULT_PAGE_HEIGHT).pageSize : getPageSize(props),
+        finalMargins: screenWidth ? screenGeometry(screenWidth, DEFAULT_PAGE_HEIGHT).margins : getMargins(props),
+        finalColumns: screenWidth ? undefined : getColumns(props),
       };
-    }, [finalSectionProperties, sectionProperties]);
+    }, [finalSectionProperties, sectionProperties, screenWidth]);
     const contentWidth = pageSize.w - margins.left - margins.right;
 
     // Initialize painter using useMemo to ensure it's ready before first render callbacks
@@ -1834,7 +1838,8 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           // Step 1: Convert PM doc to flow blocks
           let stepStart = performance.now();
           const pageContentHeight = pageSize.h - margins.top - margins.bottom;
-          const newBlocks = toFlowBlocks(state.doc, { theme: _theme, pageContentHeight });
+          const sourceBlocks = toFlowBlocks(state.doc, { theme: _theme, pageContentHeight });
+          const newBlocks = screenWidth ? screenBlocks(sourceBlocks, screenWidth, DEFAULT_PAGE_HEIGHT) : sourceBlocks;
           let stepTime = performance.now() - stepStart;
           const tFlow = stepTime;
           if (stepTime > 500) {
@@ -2130,10 +2135,10 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
               firstPageHeaderContent: firstPageHeaderForRender,
               firstPageFooterContent: firstPageFooterForRender,
               titlePg: hasTitlePg,
-              headerDistance: sectionProperties?.headerDistance
+              headerDistance: screenWidth ? margins.header : sectionProperties?.headerDistance
                 ? twipsToPixels(sectionProperties.headerDistance)
                 : undefined,
-              footerDistance: sectionProperties?.footerDistance
+              footerDistance: screenWidth ? margins.footer : sectionProperties?.footerDistance
                 ? twipsToPixels(sectionProperties.footerDistance)
                 : undefined,
               pageBorders: sectionProperties?.pageBorders,
@@ -2248,6 +2253,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       },
       [
         contentWidth,
+        screenWidth,
         columns,
         pageSize,
         margins,

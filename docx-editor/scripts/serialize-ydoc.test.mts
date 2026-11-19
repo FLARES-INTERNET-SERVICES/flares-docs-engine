@@ -11,6 +11,7 @@ import * as Y from 'yjs';
 import { prosemirrorToYXmlFragment } from 'y-prosemirror';
 import { schema } from '@eigenpal/docx-core/prosemirror';
 import { docxToYDocState, serializeYDocToDocx } from './serialize-ydoc.mts';
+import { createAnnotationIdAllocator } from '../packages/react/src/collab/annotationIds.ts';
 
 const { nodes, marks } = schema;
 const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
@@ -57,6 +58,100 @@ async function blankBase(extra: Record<string, string> = {}): Promise<Uint8Array
 }
 
 const part = async (docx: Uint8Array, path: string) => JSZip.loadAsync(docx).then((z) => z.file(path)?.async('string'));
+
+test('concurrent wide-ID replies survive a real DOCX export with Word-range IDs', async () => {
+  const a = new Y.Doc();
+  const b = new Y.Doc();
+  const parentId = 2 ** 40;
+  const make = (id: number, text: string, parentId?: number) => ({ id, author: 'Reviewer', parentId,
+    content: [{ type: 'paragraph', content: [{ type: 'run', content: [{ type: 'text', text }] }] }],
+  });
+  Y.applyUpdate(a, stateOf(nodes.paragraph.create(null,
+    schema.text('Concurrent review', [marks.comment.create({ commentId: parentId })]))));
+  a.getMap('comments').set(String(parentId), make(parentId, 'Shared parent'));
+  a.getMap('meta').set('commentsInitialized', true);
+  Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+  const idA = createAnnotationIdAllocator(() => a.clientID, id => a.getMap('comments').has(String(id)))();
+  const idB = createAnnotationIdAllocator(() => b.clientID, id => b.getMap('comments').has(String(id)))();
+  assert.notEqual(idA, idB);
+  a.getMap('comments').set(String(idA), make(idA, 'Concurrent reply A', parentId));
+  b.getMap('comments').set(String(idB), make(idB, 'Concurrent reply B', parentId));
+  Y.applyUpdate(a, Y.encodeStateAsUpdate(b));
+  Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+  assert.equal(a.getMap('comments').size, 3);
+  const originalState = Y.encodeStateAsUpdate(a);
+  for (const base of [undefined, await blankBase()]) {
+    const saved = await serializeYDocToDocx({ state: originalState, base });
+    const xml = (await part(saved, 'word/comments.xml'))!;
+    assert.match(xml, /Concurrent reply A/); assert.match(xml, /Concurrent reply B/);
+    const ids = [...xml.matchAll(/w:id="(\d+)"/g)].map(m => Number(m[1]));
+    assert.equal(new Set(ids).size, 3);
+    assert.ok(ids.every(id => id >= 0 && id <= 0x7ffffffe));
+    const body = (await part(saved, 'word/document.xml'))!;
+    const anchor = Number(body.match(/commentRangeStart w:id="(\d+)"/)?.[1]);
+    assert.ok(ids.includes(anchor));
+    for (const id of ids) assert.ok(body.includes(`<w:commentReference w:id="${id}"`), 'each reply has a document anchor');
+    const recovered = new Y.Doc();
+    Y.applyUpdate(recovered, await docxToYDocState(saved));
+    const comments = [...recovered.getMap('comments').values()] as { parentId?: number }[];
+    assert.equal(comments.filter(c => c.parentId === anchor).length, 2);
+    recovered.destroy();
+  }
+  assert.deepEqual(Y.encodeStateAsUpdate(a), originalState, 'export must not change live collaboration IDs');
+  a.destroy(); b.destroy();
+});
+
+test('a reply to a tracked change has an anchor in the saved document', async () => {
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, stateOf(nodes.paragraph.create(null, schema.text('Suggested text', [
+    marks.insertion.create({ revisionId: 7, author: 'Reviewer', date: '2026-11-19T00:00:00Z' }),
+  ]))));
+  const id = 2 ** 45;
+  doc.getMap('comments').set(String(id), { id, parentId: 7, author: 'Other reviewer', content: [
+    { type: 'paragraph', content: [{ type: 'run', content: [{ type: 'text', text: 'Review this suggestion' }] }] },
+  ] });
+  const saved = await serializeYDocToDocx({ state: Y.encodeStateAsUpdate(doc) });
+  const comments = (await part(saved, 'word/comments.xml'))!;
+  const exportedId = comments.match(/w:id="(\d+)"/)?.[1];
+  assert.ok(exportedId);
+  assert.match(comments, /Review this suggestion/);
+  const body = (await part(saved, 'word/document.xml'))!;
+  assert.ok(body.includes(`<w:commentRangeStart w:id="${exportedId}"`));
+  assert.ok(body.includes(`<w:commentReference w:id="${exportedId}"`));
+  assert.ok(body.includes('<w:ins w:id="7"'));
+  doc.destroy();
+});
+
+test('shared comments and replies survive export and recovery, including deleting all comments', async () => {
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, stateOf(nodes.paragraph.create(null,
+    schema.text('Annotated document', [marks.comment.create({ commentId: 1 })]))));
+  const comments = doc.getMap('comments');
+  const make = (id: number, text: string, parentId?: number) => ({
+    id, author: 'Synthetic reviewer', parentId,
+    content: [{ type: 'paragraph', content: [{ type: 'run', content: [{ type: 'text', text }] }] }],
+  });
+  comments.set('1', make(1, 'Original thread'));
+  comments.set('2', make(2, 'Reply survives recovery', 1));
+  doc.getMap('meta').set('commentsInitialized', true);
+  for (const base of [undefined, await blankBase()]) {
+    const saved = await serializeYDocToDocx({ state: Y.encodeStateAsUpdate(doc), base });
+    assert.match((await part(saved, 'word/comments.xml')) ?? '', /Reply survives recovery/);
+    assert.match((await part(saved, 'word/document.xml')) ?? '', /commentRangeStart w:id="1"/);
+    assert.match((await part(saved, 'word/_rels/document.xml.rels')) ?? '', /relationships\/comments"/);
+    const legacy = await serializeYDocToDocx({ state: stateOf(paragraph(null, 'Legacy room')), base: saved });
+    assert.match((await part(legacy, 'word/comments.xml')) ?? '', /Reply survives recovery/);
+    const recovered = new Y.Doc();
+    Y.applyUpdate(recovered, await docxToYDocState(saved));
+    assert.equal(recovered.getMap('comments').size, 2);
+    assert.equal((recovered.getMap('comments').get('2') as { parentId: number }).parentId, 1);
+    recovered.getMap('comments').clear();
+    const deleted = await serializeYDocToDocx({ state: Y.encodeStateAsUpdate(recovered), base: saved });
+    assert.doesNotMatch((await part(deleted, 'word/comments.xml')) ?? '', /Original thread|Reply survives recovery/);
+    recovered.destroy();
+  }
+  doc.destroy();
+});
 
 for (const [label, base] of [['no base', () => Promise.resolve(undefined)], ['a blank base', () => blankBase()]] as const) {
   test(`with ${label}, every list and style the body uses is defined`, async () => {

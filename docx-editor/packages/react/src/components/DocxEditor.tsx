@@ -1,3 +1,4 @@
+import { injectReplyRangeMarkers, injectTCReplyRangeMarkers } from '@eigenpal/docx-core/docx';
 /*
  * Copyright (c) 2026 Casual Office. All rights reserved.
  */
@@ -93,7 +94,7 @@ import { undo as pmUndo, redo as pmRedo } from 'prosemirror-history';
 import type { ReactSidebarItem } from '../plugin-api/types';
 import type { HeadingInfo } from '@eigenpal/docx-core/utils';
 import { checkAccessibility, type AccessibilityIssue } from '@eigenpal/docx-core/utils';
-import type { Comment, BlockContent, ParagraphContent } from '@eigenpal/docx-core/types/content';
+import type { Comment } from '@eigenpal/docx-core/types/content';
 import { ErrorBoundary, ErrorProvider } from './ErrorBoundary';
 import type { TableAction } from './ui/TableToolbar';
 import { mapHexToHighlightName } from './toolbarUtils';
@@ -668,6 +669,8 @@ export interface DocxEditorProps {
    * collide. Issue: github.com/eigenpal/docx-editor/issues/257.
    */
   commentIdBase?: number;
+  /** Collaborative allocator; IDs are normalized to Word's range on export. */
+  allocateAnnotationId?: () => number;
   /** Callback when editor view is ready (for PluginHost) */
   onEditorViewReady?: (view: import('prosemirror-view').EditorView) => void;
   /** Theme for styling */
@@ -740,6 +743,8 @@ export interface DocxEditorProps {
   rulerUnit?: 'inch' | 'cm';
   /** Initial zoom level (default: 1.0) */
   initialZoom?: number;
+  /** Reflow only the editing surface; original page settings remain available for export. */
+  screenWidth?: number;
   /** Whether the editor is read-only. When true, hides toolbar and rulers */
   readOnly?: boolean;
   /**
@@ -1582,151 +1587,6 @@ function bumpNextCommentIdAtLeast(value: number): void {
   if (value > nextCommentId) nextCommentId = value;
 }
 
-/**
- * Inject commentRangeStart/End/Reference for reply comments.
- * Replies share the parent comment's text range in document.xml.
- * Without these markers, Pages/Word can't find the reply.
- */
-function injectReplyRangeMarkers(content: BlockContent[], comments: Comment[]): void {
-  const replies = comments.filter((c) => c.parentId != null);
-  if (replies.length === 0) return;
-
-  // Build parentId → reply IDs map
-  const replyIdsByParent = new Map<number, number[]>();
-  for (const r of replies) {
-    const arr = replyIdsByParent.get(r.parentId!);
-    if (arr) arr.push(r.id);
-    else replyIdsByParent.set(r.parentId!, [r.id]);
-  }
-
-  // Walk document content and find parent commentRangeStart/End locations
-  function walkBlocks(blocks: BlockContent[]): void {
-    for (const block of blocks) {
-      if (block.type === 'paragraph') {
-        // Skip paragraphs without any comment range markers
-        if (
-          !block.content.some((i) => i.type === 'commentRangeStart' || i.type === 'commentRangeEnd')
-        )
-          continue;
-        const newItems: ParagraphContent[] = [];
-        for (const item of block.content) {
-          if (item.type === 'commentRangeStart') {
-            newItems.push(item);
-            // Add reply range starts right after parent's start
-            const replyIds = replyIdsByParent.get(item.id);
-            if (replyIds) {
-              for (const rid of replyIds) {
-                newItems.push({ type: 'commentRangeStart', id: rid });
-              }
-            }
-          } else if (item.type === 'commentRangeEnd') {
-            // Parent's rangeEnd first, then reply rangeEnds (parallel, not nested)
-            newItems.push(item);
-            const replyIds = replyIdsByParent.get(item.id);
-            if (replyIds) {
-              for (const rid of replyIds) {
-                newItems.push({ type: 'commentRangeEnd', id: rid });
-              }
-            }
-          } else {
-            newItems.push(item);
-          }
-        }
-        block.content = newItems;
-      } else if (block.type === 'table') {
-        for (const row of block.rows) {
-          for (const cell of row.cells) {
-            walkBlocks(cell.content);
-          }
-        }
-      }
-    }
-  }
-
-  walkBlocks(content);
-}
-
-/**
- * Inject commentRangeStart/End for comments that reply to tracked changes.
- * TC replies' parents are insertion/deletion nodes (not comments), so
- * injectReplyRangeMarkers can't find them. This function finds the TC
- * content nodes and wraps them with comment range markers.
- */
-function injectTCReplyRangeMarkers(content: BlockContent[], comments: Comment[]): void {
-  // Find replies whose parentId is a tracked change (not a real comment)
-  const commentIds = new Set(comments.map((c) => c.id));
-  const tcReplies = comments.filter((c) => c.parentId != null && !commentIds.has(c.parentId));
-  if (tcReplies.length === 0) return;
-
-  // Build revisionId → reply comment IDs
-  const replyIdsByRevision = new Map<number, number[]>();
-  for (const r of tcReplies) {
-    const arr = replyIdsByRevision.get(r.parentId!);
-    if (arr) arr.push(r.id);
-    else replyIdsByRevision.set(r.parentId!, [r.id]);
-  }
-
-  function walkBlocks(blocks: BlockContent[]): void {
-    for (const block of blocks) {
-      if (block.type === 'paragraph') {
-        // Check if any insertion/deletion in this paragraph matches a TC reply
-        const hasTC = block.content.some(
-          (item) =>
-            (item.type === 'insertion' || item.type === 'deletion') &&
-            replyIdsByRevision.has(item.info.id)
-        );
-        if (!hasTC) continue;
-
-        const newItems: ParagraphContent[] = [];
-        const items = block.content;
-        for (let i = 0; i < items.length; i++) {
-          const item = items[i];
-          if (
-            (item.type === 'insertion' || item.type === 'deletion') &&
-            replyIdsByRevision.has(item.info.id)
-          ) {
-            const replyIds = replyIdsByRevision.get(item.info.id)!;
-            // Add commentRangeStart BEFORE the TC content
-            for (const rid of replyIds) {
-              newItems.push({ type: 'commentRangeStart', id: rid });
-            }
-            newItems.push(item);
-            // Check if the next item is the other half of a replacement pair
-            // (adjacent del+ins with same author+date). If so, include it inside
-            // the comment range so we don't break del-ins adjacency.
-            const next = items[i + 1];
-            if (
-              next &&
-              (next.type === 'insertion' || next.type === 'deletion') &&
-              next.type !== item.type &&
-              next.info.author === item.info.author &&
-              next.info.date === item.info.date
-            ) {
-              newItems.push(next);
-              i++; // skip the paired item
-            }
-            // Add commentRangeEnd AFTER both TC items
-            for (const rid of replyIds) {
-              newItems.push({ type: 'commentRangeEnd', id: rid });
-            }
-          } else {
-            newItems.push(item);
-          }
-        }
-        block.content = newItems;
-      } else if (block.type === 'table') {
-        for (const row of block.rows) {
-          for (const cell of row.cells) {
-            walkBlocks(cell.content);
-          }
-        }
-      }
-    }
-  }
-
-  walkBlocks(content);
-}
-
 const EMPTY_ANCHOR_POSITIONS = new Map<string, number>();
 
 /**
@@ -1753,9 +1613,14 @@ function findSelectionYPosition(
   return null;
 }
 
-function createComment(text: string, authorName: string, parentId?: number): Comment {
+function createCommentWithId(
+  id: number,
+  text: string,
+  authorName: string,
+  parentId?: number
+): Comment {
   return {
-    id: nextCommentId++,
+    id,
     author: authorName,
     date: new Date().toISOString(),
     content: [
@@ -1934,6 +1799,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     showRuler = false,
     rulerUnit = 'inch',
     initialZoom = 1.0,
+    screenWidth,
     readOnly: readOnlyProp = false,
     disableFindReplaceShortcuts = false,
     toolbarExtra,
@@ -1971,6 +1837,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
     endnoteSync,
     propsSync,
     commentIdBase,
+    allocateAnnotationId,
     onEditorViewReady,
     onRenderedDomContextReady,
     pluginOverlays,
@@ -2504,10 +2371,16 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   // (no comments → load-time bump never fires; both peers would start
   // at 1 without this).
   useEffect(() => {
+    // Collaboration may contain replies newer than the original DOCX seed.
+    // Reserve their IDs too, otherwise the first reply after reopening can
+    // replace an existing Y.Map entry with the same numeric key.
+    for (const comment of comments) {
+      bumpNextCommentIdAtLeast(comment.id + 1);
+    }
     if (commentIdBase !== undefined) {
       bumpNextCommentIdAtLeast(commentIdBase + 1);
     }
-  }, [commentIdBase]);
+  }, [commentIdBase, comments]);
 
   // Extension manager — built once, provides schema + plugins + commands.
   //
@@ -2642,6 +2515,27 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
 
   // Refs
   const pagedEditorRef = useRef<PagedEditorRef>(null);
+  const annotationAllocatorRef = useRef(allocateAnnotationId);
+  annotationAllocatorRef.current = allocateAnnotationId;
+  const nextAnnotationId = useCallback(() => {
+    const used = new Set(commentsRef.current.map((c) => c.id));
+    pagedEditorRef.current?.getView()?.state.doc.descendants((node) => {
+      for (const mark of node.marks) {
+        if (typeof mark.attrs.revisionId === 'number') used.add(mark.attrs.revisionId);
+        if (typeof mark.attrs.commentId === 'number') used.add(mark.attrs.commentId);
+      }
+    });
+    let id: number;
+    do {
+      id = annotationAllocatorRef.current ? annotationAllocatorRef.current() : nextCommentId++;
+    } while (used.has(id));
+    return id;
+  }, []);
+  const createComment = useCallback(
+    (text: string, author: string, parentId?: number) =>
+      createCommentWithId(nextAnnotationId(), text, author, parentId),
+    [nextAnnotationId]
+  );
   const previewEditorRef = useRef<PagedEditorRef>(null);
   const previewScrollRef = useRef<HTMLDivElement>(null);
   const hfEditorRef = useRef<InlineHeaderFooterEditorRef>(null);
@@ -8382,7 +8276,7 @@ body { background: white; }
           if (overlapsTrackedChange) return false;
         }
 
-        const revisionId = nextCommentId++;
+        const revisionId = nextAnnotationId();
         const date = new Date().toISOString();
 
         const deletionMark = schema.marks.deletion.create({
@@ -8711,7 +8605,7 @@ body { background: white; }
         });
         if (overlapsTrackedChange) return false;
 
-        const revisionId = nextCommentId++;
+        const revisionId = nextAnnotationId();
         const date = new Date().toISOString();
 
         const deletionMark = schema.marks.deletion.create({
@@ -8742,7 +8636,7 @@ body { background: white; }
         const { schema } = view.state;
         if (!schema.marks.deletion) return false;
 
-        const revisionId = nextCommentId++;
+        const revisionId = nextAnnotationId();
         const date = new Date().toISOString();
 
         let tr = view.state.tr;
@@ -8792,7 +8686,7 @@ body { background: white; }
         const range = findParaIdRange(view.state.doc, options.paraId);
         if (!range) return false;
 
-        const revisionId = nextCommentId++;
+        const revisionId = nextAnnotationId();
         const date = new Date().toISOString();
 
         const insertionMark = schema.marks.insertion.create({
@@ -9649,7 +9543,7 @@ body { background: white; }
   // history is a flex sibling of the scroll container (see below) so
   // it reserves real horizontal space via the flex layout and doesn't
   // need the translate hack.
-  const sidebarOpen = showCommentsSidebar || allSidebarItems.length > 0;
+  const sidebarOpen = !screenWidth && (showCommentsSidebar || allSidebarItems.length > 0);
   // Reserve 2× the left-edge allowance so the centered page clears whatever
   // outline UI is showing, without forcing a shift on wide viewports.
   // Google-Docs-style centering: the page centers in the FULL window at every
@@ -9663,9 +9557,9 @@ body { background: white; }
   const outlineLeftAllowance = showOutline ? OUTLINE_RESERVED_SPACE : 0;
 
   const sectionPropsPageWidth = history.state?.package?.document?.finalSectionProperties?.pageWidth;
-  const pageWidthPx = sectionPropsPageWidth
-    ? Math.round(sectionPropsPageWidth / 15)
-    : DEFAULT_PAGE_WIDTH;
+  const pageWidthPx =
+    screenWidth ??
+    (sectionPropsPageWidth ? Math.round(sectionPropsPageWidth / 15) : DEFAULT_PAGE_WIDTH);
   // Reserve the displayed page width, not an unscaled desktop page on phones.
   const minLayoutWidth =
     2 * outlineLeftAllowance +
@@ -9993,7 +9887,7 @@ body { background: white; }
                       flex: 1,
                       minHeight: 0,
                       minWidth: 0,
-                      flexDirection: 'row',
+                      flexDirection: screenWidth ? 'column' : 'row',
                       position: 'relative',
                     }}
                   >
@@ -10002,7 +9896,13 @@ body { background: white; }
                       to the viewport instead of scrolling with the document. */}
                     <div
                       ref={editorColumnRef}
-                      style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}
+                      style={{
+                        position: 'relative',
+                        flex: 1,
+                        minWidth: 0,
+                        minHeight: 0,
+                        display: 'flex',
+                      }}
                     >
                       {/* Editor container - this is the scroll container (toolbar is above, not inside) */}
                       <div
@@ -10258,13 +10158,19 @@ body { background: white; }
                                   }
                                 }
                                 if (cursorSidebarItem) setShowCommentsSidebar(true);
-                                setExpandedSidebarItem(cursorSidebarItem);
+                                // Keep manually opened cards through selection refreshes,
+                                // including the blur caused by focusing their reply composer.
+                                // Document clicks and panel toggles still dismiss them explicitly.
+                                if (cursorSidebarItem) {
+                                  setExpandedSidebarItem(cursorSidebarItem);
+                                }
                               } else {
                                 handleSelectionChange(null);
                               }
                             }) && null}
                             <PagedEditor
                               ref={pagedEditorRef}
+                              screenWidth={screenWidth}
                               document={history.state}
                               styles={history.state?.package.styles}
                               theme={history.state?.package.theme || theme}
@@ -10388,7 +10294,7 @@ body { background: white; }
                                       </Tooltip>
                                     </div>
                                   )}
-                                  {allSidebarItems.length > 0 && (
+                                  {!screenWidth && allSidebarItems.length > 0 && (
                                     <UnifiedSidebar
                                       items={allSidebarItems}
                                       anchorPositions={anchorPositions}
@@ -10822,6 +10728,52 @@ body { background: white; }
                         );
                       })()}
 
+                    {screenWidth && allSidebarItems.length > 0 && (
+                      <section
+                        aria-label="Comments and annotations"
+                        style={{
+                          flexShrink: 0,
+                          maxHeight: '35vh',
+                          overflowY: 'auto',
+                          minWidth: 0,
+                          padding: '8px 12px',
+                          borderTop: '1px solid var(--doc-border)',
+                          background: 'var(--doc-surface, white)',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: 8,
+                          }}
+                        >
+                          <strong>Comments and annotations</strong>
+                          {showCommentsSidebar && (
+                            <button
+                              type="button"
+                              onClick={() => setShowCommentsSidebar(false)}
+                              style={{ minHeight: 44, padding: '8px 12px' }}
+                            >
+                              Close comments
+                            </button>
+                          )}
+                        </div>
+                        <UnifiedSidebar
+                          stacked
+                          items={allSidebarItems}
+                          anchorPositions={anchorPositions}
+                          renderedDomContext={pluginRenderedDomContext ?? null}
+                          pageWidth={pageWidthPx}
+                          zoom={state.zoom}
+                          editorContainerRef={scrollContainerRef}
+                          onExpandedItemChange={setExpandedSidebarItem}
+                          activeItemId={expandedSidebarItem}
+                        />
+                      </section>
+                    )}
+
                     {/* Comments use the anchored-cards approach (UnifiedSidebar
                       paints a floating card next to each commented span).
                       There is intentionally no solid docked comments panel —
@@ -10907,6 +10859,7 @@ body { background: white; }
                     the editor body's height, not the toolbar's. */}
                     {showPanelRailEffective && !focusMode && (
                       <PanelRail
+                        horizontal={!!screenWidth}
                         outlineVisible={showOutlineEffective}
                         commentsVisible={showCommentsSidebar}
                         historyVisible={showVersionHistory}

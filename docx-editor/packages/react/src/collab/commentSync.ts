@@ -29,21 +29,31 @@ export function commentsFromMap(map: Y.Map<unknown>): Comment[] {
 }
 
 /**
- * Reconcile the full Comment[] into the shared map in one transaction: upsert
- * every current comment by id, delete entries that no longer exist. Skips the
- * write entirely when nothing changed so we don't echo our own observer.
+ * Apply changes relative to the snapshot the editor rendered. Remote changes
+ * may already be in the map while React still displays that older snapshot;
+ * unchanged local entries must not overwrite them or resurrect deleted entries.
+ * Omitting previous retains full replacement semantics for seeding/imports.
  */
-export function writeCommentsToMap(map: Y.Map<unknown>, comments: Comment[]): void {
+export function writeCommentsToMap(
+  map: Y.Map<unknown>,
+  comments: Comment[],
+  previous?: Comment[]
+): void {
   const doc = map.doc;
+  const baseline = previous && new Map(previous.map((c) => [String(c.id), c]));
   const apply = () => {
+    if (doc && doc.getMap('meta').get('commentsInitialized') !== true) {
+      doc.getMap('meta').set('commentsInitialized', true);
+    }
     const nextIds = new Set(comments.map((c) => String(c.id)));
     // Delete removed.
-    for (const key of Array.from(map.keys())) {
+    for (const key of Array.from(baseline ? baseline.keys() : map.keys())) {
       if (!nextIds.has(key)) map.delete(key);
     }
     // Upsert changed (cheap deep-equal via JSON to avoid redundant churn).
     for (const c of comments) {
       const key = String(c.id);
+      if (baseline?.has(key) && JSON.stringify(baseline.get(key)) === JSON.stringify(c)) continue;
       const existing = map.get(key);
       if (!existing || JSON.stringify(existing) !== JSON.stringify(c)) {
         map.set(key, c);
