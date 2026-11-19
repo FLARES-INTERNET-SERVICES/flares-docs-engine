@@ -58,7 +58,7 @@ export function CommentMarginMarkers({
         position: 'absolute',
         top: 0,
         // Position just past the page right edge
-        left: `calc(50% + ${(pageWidth * zoom) / 2 + 6}px)`,
+        left: `min(calc(100% - 24px), calc(50% + ${(pageWidth * zoom) / 2 + 6}px))`,
         zIndex: 30,
         pointerEvents: 'none',
       }}

@@ -81,7 +81,7 @@ html[data-flares-editor] [data-testid='status-bar'] {
     flex-wrap: wrap !important;
     overflow: auto;
     max-height: 35dvh;
-    gap: 4px;
+    gap: 4px !important;
     scrollbar-width: auto;
   }
   html[data-flares-editor] [data-testid='formatting-bar'] [role='group'] {
@@ -96,7 +96,7 @@ html[data-flares-editor] [data-testid='status-bar'] {
   }
   html[data-flares-editor] [data-testid='status-bar'] {
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 4px !important;
   }
   html[data-flares-editor] [data-testid='status-reading-time'],
   html[data-flares-editor] [data-testid='status-readability'] {

@@ -2337,7 +2337,9 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   // Extract comments from document model on initial load
   const commentsLoadedRef = useRef(false);
   useEffect(() => {
-    if (commentsLoadedRef.current) return;
+    // Controlled comments belong to the host/CRDT. The DOCX seed can be stale
+    // and export renumbers annotation IDs; importing it would replace live threads.
+    if (isControlledComments || commentsLoadedRef.current) return;
     const doc = history.state;
     if (!doc) return;
     const bodyComments = doc.package?.document?.comments;
@@ -2364,7 +2366,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
       const partition = commentIdBase ?? 0;
       bumpNextCommentIdAtLeast(Math.max(maxId, partition) + 1);
     }
-  }, [history.state, commentIdBase]);
+  }, [history.state, commentIdBase, isControlledComments]);
 
   // Apply commentIdBase on mount and whenever it changes — independent
   // of doc-load, since collab rooms can seed from createEmptyDocument()
@@ -3432,7 +3434,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
   const resetForNewDocument = useCallback(() => {
     commentsLoadedRef.current = false;
     trackedChangesLoadedRef.current = false;
-    setComments([]);
+    if (!isControlledComments) setComments([]);
     setHeadingInfos([]);
     setShowCommentsSidebar(false);
     setIsAddingComment(false);
@@ -3448,7 +3450,7 @@ export const DocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Do
       clearTimeout(cleanOrphanedCommentsTimerRef.current);
       cleanOrphanedCommentsTimerRef.current = null;
     }
-  }, [findReplace.setMatches, setComments]);
+  }, [findReplace.setMatches, setComments, isControlledComments]);
 
   // Load a pre-parsed document (used by ref method and internally)
   const loadParsedDocument = useCallback(

@@ -4539,8 +4539,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       return () => {
         window.document.fonts.removeEventListener('loadingdone', handleFontsLoaded);
       };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [runLayoutPipeline, updateSelectionOverlay]);
 
     // Re-layout when header/footer content changes (e.g., after HF editor save).
     // runLayoutPipeline includes headerContent/footerContent in its deps, but it

@@ -387,7 +387,9 @@ export function App() {
   }
 
   const randomAuthor = useMemo(
-    () => `Docx Editor User ${Math.floor(Math.random() * 900) + 100}`,
+    () =>
+      new URLSearchParams(window.location.search).get('author')?.trim().slice(0, 200) ||
+      'Document editor',
     []
   );
   // Demo stand-in for the people the host (Drive) would supply — surfaces them
@@ -598,6 +600,11 @@ export function App() {
   // immediately. Stored in sessionStorage so the same browser tab
   // keeps a stable colour across reloads.
   const localUser = useMemo(() => {
+    const hostName = new URLSearchParams(window.location.search)
+      .get('author')
+      ?.trim()
+      .slice(0, 200);
+    if (hostName) return { name: hostName, color: '#2563eb' };
     const stored = sessionStorage.getItem('collab-user');
     if (stored) {
       try {
